@@ -450,7 +450,11 @@ status=3 on the *current* video.
 Fix: `_sabr.getAndUpdate { next }` and release the returned previous value, or confine all `_sabr`
 writes to one dispatcher.
 
-### P1 — `WebPoTokenProvider`: three unbounded awaits under the process-wide mint mutex
+### ~~P1 — `WebPoTokenProvider`: three unbounded awaits under the process-wide mint mutex~~ — code-complete 2026-10-19, NOT yet built or run
+
+**Addressed 2026-10-19:** All three waits (init, player-script eval, out-of-page mint) now go through `awaitBounded`, which turns a timeout into a `PoTokenException` (init 30 s, eval 15 s, mint 30 s). The null-WebView mint path now fails its deferred. A timed-out init also drops the WebView, so the next call starts fresh. The pattern was checked live against GrayJay's `BotGuardBrowserGenerator.initialize` (`browser.waitTillLoaded(20000)` plus a `TIMEOUT_MS = 10000` minter poll that reports failure).
+
+Original report:
 Every entry point takes `mintMutex.withLock` first, and three paths under it can wait forever:
  * `ensureInitialized()` awaits `initDeferred`, only ever completed from the JS bridge — an offline
    cold start, a WebView provider mid-update, or a CSP-strip intercept serving a page our script
@@ -466,7 +470,11 @@ playback JS queue dies with it. This is a better-evidenced explanation of "SABR 
 together" than the orphaned-mint-pileup story currently documented in `SabrSessionFactory`.
 Fix: bound all three with `withTimeout`, and fail the deferred on the null-WebView path.
 
-### P1 — Mint timeout can never reach its own recovery path
+### ~~P1 — Mint timeout can never reach its own recovery path~~ — code-complete 2026-10-19, NOT yet built or run
+
+**Addressed 2026-10-19:** The in-page mint now times out via `awaitBounded`, which throws `PoTokenException`, not `TimeoutCancellationException`, so `generateAttestedPoToken`'s reset-and-retry arm is reachable for a hung renderer.
+
+Original report:
 `generateAttestedPoTokenOnce` fails via `withTimeout`, which throws `TimeoutCancellationException` —
 a `CancellationException`. The `catch (ce: CancellationException)` arm matches first and rethrows,
 so the `catch (t: Throwable)` reset-and-retry block below it is unreachable for exactly the
@@ -474,7 +482,11 @@ hung-renderer case its own ten-line comment describes.
 Fix: catch `TimeoutCancellationException` ahead of `CancellationException`, or convert the timeout
 into a `PoTokenException` inside the callee.
 
-### P1 — `pendingSabrMint` is a single slot completed without checking the identifier
+### ~~P1 — `pendingSabrMint` is a single slot completed without checking the identifier~~ — code-complete 2026-10-19, NOT yet built or run
+
+**Addressed 2026-10-19:** Each in-page mint gets a request id (`window.__SABR_POC_REQUEST_ID`). `sabr_potoken.js` captures it at injection time and echoes it on every report, error reports included. `onSabrPoTokenResult` drops any report whose id isn't the one in the slot, and the slot is cleared in a `finally` on timeout. This touches only how the SABR/attested-mint result is delivered: which identifier a token is bound to is unchanged (`PoTokenBinding` still decides).
+
+Original report:
 `onSabrPoTokenResult` completes whatever deferred is in `pendingSabrMint`, using the payload's
 `identifier` only for logging; the slot is also not cleared when the mint times out. A slow mint for
 videoId X that lands after a mint for visitorData Y has installed its deferred hands Y's caller a
@@ -482,7 +494,11 @@ token bound to X. Silent wrong binding — the exact failure class runs 15-20 we
 Fix: stamp the expected identifier next to the deferred, drop a non-matching callback, and null the
 slot on timeout.
 
-### P1 — `resetInternal()` does not actually recreate the WebView
+### ~~P1 — `resetInternal()` does not actually recreate the WebView~~ — code-complete 2026-10-19, NOT yet built or run
+
+**Addressed 2026-10-19:** `resetInternal` now destroys and nulls the WebView, fails every pending deferred, and replaces `pageVisitorData`, the same as `close()` did, which now just calls it. Without the replacement, the new page's identity was never captured either, because capture skips an already-completed deferred.
+
+Original report:
 It calls `loadUrl("about:blank")` and nulls `initDeferred`, but leaves `webView` non-null, so the
 following `createWebViewIfNeeded()` returns immediately. The comment says the opposite ("recreate
 from scratch"). If the renderer really is dead, the retry runs against the same dead WebView.
@@ -490,7 +506,11 @@ Related: `resetInternal()` also leaves `pageVisitorData` in place, though `close
 stated reason that "the identity we captured belongs to a page that no longer exists" — so after a
 reset the app keeps attesting under the previous page's visitorData.
 
-### P1 — No `onRenderProcessGone` override
+### ~~P1 — No `onRenderProcessGone` override~~ — code-complete 2026-10-19, NOT yet built or run
+
+**Addressed 2026-10-19:** Overridden: it returns `true` and resets with `rendererAlive = false`, which only destroys the dead WebView (no `loadUrl`/`onPause`) and fails the pending deferreds; the next call creates a new WebView. A report for an instance that was already replaced is ignored.
+
+Original report:
 The code explicitly anticipates the hidden WebView being reclaimed ("it's never attached to a
 visible window, so the OS is freer to reclaim it"), but without this override a renderer death
 terminates the app process instead of being recoverable. Most likely while playing with the screen
@@ -518,7 +538,11 @@ longer eagerly reads `App.youtubeBridge` (a `synchronized` lazy the playback war
 — the `SynchronizedLazyImpl` contention in A3's notes), and the ninth decode
 (`loadCachedHomeFeed()` plus the ranking pass it feeds) moved to `Dispatchers.IO`.
 
-### P1 — ExoPlayer listener never removed, and the hijack dispose path skips `release()`
+### ~~P1 — ExoPlayer listener never removed, and the hijack dispose path skips `release()`~~ — code-complete 2026-10-19, NOT yet built or run
+
+**Addressed 2026-10-19:** The listener is kept in `attachedListener` and removed in `onDispose` on every path, including the hand-off path, where the player itself must stay alive for the successor that adopts it. Still open: the player is built inside `remember`, so a composition that is abandoned before it applies would leak an unreleased player. That's rare; the fix is a `RememberObserver` that releases in `onAbandoned`.
+
+Original report:
 `exo.addListener(...)` in `PlayerScreen` has no matching `removeListener`; normally `release()`
 covers it, but `onDispose` returns early when `hijackedElsewhere()`. Each locked-screen
 autoplay-next hand-off therefore adds another listener to the same adopted player, and

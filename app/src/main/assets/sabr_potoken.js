@@ -42,6 +42,13 @@
 (function () {
     'use strict';
 
+    // Which Kotlin request this injection serves, echoed back on EVERY report (success or error).
+    // Captured once, at injection time: Kotlin re-injects this whole script for each mint, so each
+    // injection's scope keeps its own id even after a later injection overwrites the global. Lets
+    // WebPoTokenProvider drop a late result from a mint it already gave up on, instead of handing
+    // that token (bound to the OLD identifier) to whoever is waiting now.
+    var REQUEST_ID = window.__SABR_POC_REQUEST_ID;
+
     // YouTube ships a Trusted Types CSP that blocks new Function()/eval of the BotGuard interpreter.
     // An identity "default" policy makes Chromium route those sinks through it. (Our WebView also
     // strips CSP headers, but installing the policy is belt-and-suspenders and matches PipePipe.)
@@ -68,6 +75,7 @@
     var STATE_KEY = '__SABR_POT_STATE';
 
     function report(result) {
+        result.requestId = REQUEST_ID;
         try {
             PoTokenBridge.onSabrPoTokenResult(JSON.stringify(result));
         } catch (e) {

@@ -9,6 +9,7 @@ import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.CookieManager
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -27,6 +28,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -35,6 +37,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Generates YouTube WebPO tokens by running BotGuard inside a hidden Chromium
@@ -82,8 +86,12 @@ class WebPoTokenProvider(private val context: Context) {
     // Per-identifier mint requests in flight; keyed by identifier.
     private val pendingMints = ConcurrentHashMap<String, CompletableDeferred<String>>()
 
-    // In-flight in-page SABR/GVS mint (att/get flow); single-slot, serialized by mintMutex.
-    @Volatile private var pendingSabrMint: CompletableDeferred<String>? = null
+    // In-flight in-page att/get mint; single slot, serialized by mintMutex. Tagged with a request id
+    // that sabr_potoken.js echoes back on every report, so a late result from a mint we already
+    // timed out on can't complete the NEXT mint's deferred with a token bound to the old identifier.
+    private class PendingSabrMint(val requestId: Long, val deferred: CompletableDeferred<String>)
+    private val pendingSabrMint = AtomicReference<PendingSabrMint?>(null)
+    private val sabrMintSeq = AtomicLong()
 
     // The youtube.com page's OWN visitorData — the identity BotGuard actually attests under, since
     // att/get is fetched by the page with the page's cookies. Captured once per page load. Completes
@@ -153,7 +161,15 @@ class WebPoTokenProvider(private val context: Context) {
         val safeIdJsLiteral = JSONObject.quote(identifier)
         val u8 = newUint8ArrayJs(identifier.toByteArray(Charsets.UTF_8))
         runOnMain {
-            webView?.evaluateJavascript(
+            val wv = webView
+            if (wv == null) {
+                // Fail rather than return: the await below would otherwise wait for a callback that
+                // no page exists to send (the sibling mint and eval paths already do this).
+                pendingMints.remove(identifier, deferred)
+                deferred.completeExceptionally(PoTokenException("WebView not available for mint"))
+                return@runOnMain
+            }
+            wv.evaluateJavascript(
                 """
                 (function() {
                   try {
@@ -174,7 +190,11 @@ class WebPoTokenProvider(private val context: Context) {
                 null,
             )
         }
-        deferred.await()
+        try {
+            awaitBounded(deferred, GVS_MINT_TIMEOUT_MS, "mint for $identifier")
+        } finally {
+            pendingMints.remove(identifier, deferred)
+        }
     }
 
     /**
@@ -250,7 +270,8 @@ class WebPoTokenProvider(private val context: Context) {
         // freshness the grace-vs-accepted split tracks. See SETTLE_AFTER_INIT_MS.
         awaitPageSettled()
         val deferred = CompletableDeferred<String>()
-        pendingSabrMint = deferred
+        val pending = PendingSabrMint(sabrMintSeq.incrementAndGet(), deferred)
+        pendingSabrMint.set(pending)
         val sabrJs = context.assets.open(SABR_POTOKEN_JS).bufferedReader().use { it.readText() }
         // Inject the session's OWN visitorData + clientVersion so the script doesn't scrape a garbage
         // value off the page (that produced a 558-char visitorData → invalid header → "Failed to
@@ -259,6 +280,7 @@ class WebPoTokenProvider(private val context: Context) {
             append("window.__SABR_POC_IDENTIFIER=").append(JSONObject.quote(identifier)).append(";\n")
             append("window.__SABR_POC_PURPOSE=").append(JSONObject.quote(purpose)).append(";\n")
             append("window.__SABR_POC_FORCE_REATTEST=").append(forceReattest).append(";\n")
+            append("window.__SABR_POC_REQUEST_ID=").append(pending.requestId).append(";\n")
             if (!visitorData.isNullOrEmpty()) {
                 append("window.__SABR_VISITOR_DATA=").append(JSONObject.quote(visitorData)).append(";\n")
             }
@@ -269,14 +291,21 @@ class WebPoTokenProvider(private val context: Context) {
         runOnMain {
             val wv = webView
             if (wv == null) {
-                pendingSabrMint = null
                 deferred.completeExceptionally(PoTokenException("WebView not available for $purpose mint"))
             } else {
                 wv.evaluateJavascript(setVars + sabrJs, null)
             }
         }
-        // att/get + BotGuard + GenerateIT + mint, all in-page, can take a few seconds.
-        return withTimeout(GVS_MINT_TIMEOUT_MS) { deferred.await() }
+        // att/get + BotGuard + GenerateIT + mint, all in-page, can take a few seconds. A timeout
+        // surfaces as PoTokenException (see awaitBounded), which is what lets the caller's
+        // reset-and-retry run for a hung renderer.
+        return try {
+            awaitBounded(deferred, GVS_MINT_TIMEOUT_MS, "$purpose mint")
+        } finally {
+            // Free the slot whatever happened, so a late report for this request finds nothing to
+            // complete (and is dropped by its request id even if a newer mint already took the slot).
+            pendingSabrMint.compareAndSet(pending, null)
+        }
     }
 
     /**
@@ -318,7 +347,7 @@ class WebPoTokenProvider(private val context: Context) {
                 }
             }
         }
-        val result = deferred.await()
+        val result = awaitBounded(deferred, EVAL_TIMEOUT_MS, "player-script eval")
         val obj = runCatching { JSONObject(result) }.getOrNull()
         when {
             obj == null -> {
@@ -340,22 +369,29 @@ class WebPoTokenProvider(private val context: Context) {
 
     /** Tear down WebView. Call from App.onTerminate (or never — it's cheap). */
     fun close() {
-        runOnMain {
-            try { webView?.loadUrl("about:blank") } catch (_: Throwable) {}
-            try { webView?.onPause() } catch (_: Throwable) {}
-            try { webView?.removeAllViews() } catch (_: Throwable) {}
-            try { webView?.destroy() } catch (_: Throwable) {}
-            webView = null
-            initDeferred = null
-            integrityExpiresAtMs = 0L
-            initCompletedAtMs = 0L
-            // The page is being reloaded, so the identity we captured belongs to a page that no
-            // longer exists. Replace the deferred rather than clearing it: anyone already awaiting
-            // the old one must still be released.
-            pageVisitorData.complete("")
-            pageVisitorData = CompletableDeferred()
-        }
+        runOnMain { resetInternal("WebView closed") }
     }
+
+    /**
+     * Await [deferred] for at most [timeoutMs], turning a timeout into a [PoTokenException].
+     *
+     * Every wait in this class is on a callback from the hidden WebView, and a WebView can simply
+     * never call back (offline cold start, renderer hung or reclaimed, a page our script can't run
+     * on). These waits all happen under [mintMutex], and the JS warmup reaches that mutex while
+     * holding QuickJsRuntime's call lock, so one unbounded wait used to stall ALL playback.
+     * GrayJay bounds the same steps (YoutubeScript.js, BotGuardBrowserGenerator.initialize:
+     * `browser.waitTillLoaded(20000)`, then a `TIMEOUT_MS = 10000` poll that reports failure).
+     *
+     * Not plain [withTimeout]: that throws TimeoutCancellationException, a CancellationException,
+     * which callers rethrow as "the caller went away" — so a hung WebView looked like a cancellation
+     * and skipped the reset-and-retry in [generateAttestedPoToken] that exists for exactly that case.
+     */
+    private suspend fun <T : Any> awaitBounded(
+        deferred: CompletableDeferred<T>,
+        timeoutMs: Long,
+        what: String,
+    ): T = withTimeoutOrNull(timeoutMs) { deferred.await() }
+        ?: throw PoTokenException("$what timed out after ${timeoutMs}ms")
 
     // ── Init ────────────────────────────────────────────────────────────────
 
@@ -370,7 +406,15 @@ class WebPoTokenProvider(private val context: Context) {
             createWebViewIfNeeded()
             loadHtmlAndKickoff()
         }
-        deferred.await()
+        try {
+            awaitBounded(deferred, INIT_TIMEOUT_MS, "WebPO init")
+        } catch (e: PoTokenException) {
+            // A page that never finished initialising is not worth waiting on again: start the next
+            // attempt from a fresh WebView instead of re-awaiting (or reloading) this one.
+            Log.w(tag, "${e.message} — dropping the WebView; the next call starts over")
+            withContext(Dispatchers.Main) { resetInternal("WebPO init timed out") }
+            throw e
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -461,6 +505,23 @@ class WebPoTokenProvider(private val context: Context) {
                     Log.w(tag, "intercept failed for $url: ${e.message}")
                     null
                 }
+            }
+
+            /**
+             * The hidden WebView is never attached to a window, so Android may reclaim its renderer
+             * under memory pressure — most likely while playing with the screen locked. Without this
+             * override a renderer death kills the whole app process. Returning true keeps the app
+             * alive; the dead WebView must then be destroyed and never used again, and the next
+             * call builds a new one. Runs on the main thread.
+             */
+            override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
+                if (view !== webView) {
+                    // An instance we already replaced; resetInternal destroyed it.
+                    return true
+                }
+                Log.w(tag, "BotGuard WebView renderer gone (crashed=${detail.didCrash()}) — dropping it; the next call recreates it")
+                resetInternal("WebView renderer gone", rendererAlive = false)
+                return true
             }
 
             override fun onPageFinished(view: WebView, url: String) {
@@ -594,26 +655,58 @@ class WebPoTokenProvider(private val context: Context) {
         webView!!.loadUrl("https://www.youtube.com/")
     }
 
-    private fun resetInternal() {
-        webView?.let {
-            try { it.loadUrl("about:blank") } catch (_: Throwable) {}
-        }
-        initDeferred = null
+    /**
+     * Throw the WebView away so the next call builds a new one from scratch. Main thread only.
+     *
+     * This used to only `loadUrl("about:blank")` and leave [webView] set, so the following
+     * [createWebViewIfNeeded] returned at once and the "fresh" retry ran on the same — possibly
+     * dead — renderer. It also kept [pageVisitorData], so the app went on attesting under the
+     * vanished page's identity (and the new page's identity was never captured: capture skips an
+     * already-completed deferred).
+     *
+     * Pass [rendererAlive] = false after the renderer has died ([WebViewClient.onRenderProcessGone]):
+     * a WebView in that state may only be destroyed, not navigated or paused.
+     */
+    private fun resetInternal(reason: String = "WebView session reset", rendererAlive: Boolean = true) {
+        destroyWebView(rendererAlive)
+        // Release anyone still waiting on the old page: it will never answer now.
+        failPending(reason)
         integrityExpiresAtMs = 0L
         // The page is being reloaded from scratch, so the next mint has to wait out a fresh settle
         // window too — it faces exactly the same half-warmed page the first one did.
         initCompletedAtMs = 0L
+        // The identity we captured belongs to a page that no longer exists. Replace the deferred
+        // rather than clearing it: anyone already awaiting the old one must still be released.
+        pageVisitorData.complete("")
+        pageVisitorData = CompletableDeferred()
+    }
+
+    private fun destroyWebView(rendererAlive: Boolean) {
+        val wv = webView ?: return
+        webView = null
+        if (rendererAlive) {
+            try { wv.loadUrl("about:blank") } catch (_: Throwable) {}
+            try { wv.onPause() } catch (_: Throwable) {}
+        }
+        try { wv.removeAllViews() } catch (_: Throwable) {}
+        try { wv.destroy() } catch (_: Throwable) {}
+    }
+
+    /** Fail every deferred still waiting on the current page: init, both mint kinds. */
+    private fun failPending(message: String) {
+        val d = initDeferred
+        initDeferred = null
+        d?.completeExceptionally(PoTokenException(message))
+        val snapshot = pendingMints.toMap()
+        pendingMints.clear()
+        snapshot.values.forEach { it.completeExceptionally(PoTokenException(message)) }
+        pendingSabrMint.getAndSet(null)?.deferred?.completeExceptionally(PoTokenException(message))
     }
 
     private fun onInitError(message: String) {
         Log.e(tag, "init error: $message")
-        val d = initDeferred
-        initDeferred = null
-        d?.completeExceptionally(PoTokenException(message))
         // Fail any in-flight mints too — without init they can't proceed.
-        val snapshot = pendingMints.toMap()
-        pendingMints.clear()
-        snapshot.values.forEach { it.completeExceptionally(PoTokenException(message)) }
+        failPending(message)
     }
 
     // ── JavaScript bridge callbacks ─────────────────────────────────────────
@@ -717,11 +810,26 @@ class WebPoTokenProvider(private val context: Context) {
     /** Result of the in-page att/get mint (sabr_potoken.js → PoTokenBridge). */
     @JavascriptInterface
     fun onSabrPoTokenResult(json: String) {
-        val deferred = pendingSabrMint
-        pendingSabrMint = null
-        if (deferred == null) return
+        val pending = pendingSabrMint.get() ?: return
+        val obj = try {
+            JSONObject(json)
+        } catch (t: Throwable) {
+            if (pendingSabrMint.compareAndSet(pending, null)) {
+                pending.deferred.completeExceptionally(PoTokenException("in-page mint parse failed: ${t.message}"))
+            }
+            return
+        }
+        // Only the request we're waiting for may complete the slot. A report for an earlier request
+        // (one we already timed out on) carries a token bound to THAT request's identifier, and
+        // handing it to the current caller is a silent wrong binding.
+        val reportedId = obj.optLong("requestId", -1L)
+        if (reportedId != pending.requestId) {
+            Log.w(tag, "dropping late in-page mint report for request $reportedId (waiting for ${pending.requestId})")
+            return
+        }
+        if (!pendingSabrMint.compareAndSet(pending, null)) return
+        val deferred = pending.deferred
         try {
-            val obj = JSONObject(json)
             if (obj.optBoolean("ok", false)) {
                 val pot = obj.optString("poToken", "")
                 if (pot.isNotEmpty()) {
@@ -882,6 +990,11 @@ class WebPoTokenProvider(private val context: Context) {
         private const val SABR_POTOKEN_JS = "sabr_potoken.js"
         private const val VISITOR_DATA_JS = "visitor_data.js"
         private const val GVS_MINT_TIMEOUT_MS = 30_000L
+        // Cold init = create the WebView, load youtube.com, run BotGuard, two jnn round-trips. Normally
+        // a few seconds; GrayJay allows 20 s for the page load plus 10 s for its minter (see awaitBounded).
+        private const val INIT_TIMEOUT_MS = 30_000L
+        // The decipher script runs locally in V8 and normally answers in milliseconds.
+        private const val EVAL_TIMEOUT_MS = 15_000L
 
         /** Token is for the Innertube `/player` call (`serviceIntegrityDimensions.poToken`). */
         const val PURPOSE_PLAYER = "player"
