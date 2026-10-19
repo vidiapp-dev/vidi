@@ -12,10 +12,12 @@ Every release must be signed with **the same key, forever**. Android only instal
 signed by the same key as the installed app; if the key is lost, nobody can ever update — they'd
 have to uninstall (losing their history, subscriptions and playlists) and reinstall.
 
-1. **Create the keystore** (on your own machine, never in CI). `keytool` ships with Android Studio:
+1. **Create the keystore** (on your own machine, never in CI). `keytool` ships with Android Studio.
+   Run this in PowerShell (the leading `&` tells PowerShell to run the quoted path as a program),
+   from a folder outside the repo, e.g. your Documents:
 
    ```
-   "C:\Program Files\Android\Android Studio\jbr\bin\keytool.exe" -genkeypair -v -keystore vidi-release.jks -alias vidi -keyalg RSA -keysize 4096 -validity 10000 -dname "CN=vidiapp-dev"
+   & "C:\Program Files\Android\Android Studio\jbr\bin\keytool.exe" -genkeypair -v -keystore vidi-release.jks -alias vidi -keyalg RSA -keysize 4096 -validity 10000 -dname "CN=vidiapp-dev"
    ```
 
    It asks for one password: modern keystores (PKCS12) use the same password for the store and the
@@ -45,7 +47,7 @@ have to uninstall (losing their history, subscriptions and playlists) and reinst
 4. **Note the certificate fingerprint** so users can verify downloads:
 
    ```
-   "C:\Program Files\Android\Android Studio\jbr\bin\keytool.exe" -list -v -keystore vidi-release.jks -alias vidi
+   & "C:\Program Files\Android\Android Studio\jbr\bin\keytool.exe" -list -v -keystore vidi-release.jks -alias vidi
    ```
 
    Publish the `SHA256:` line in the README. The release workflow also prints it (via
