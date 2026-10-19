@@ -15,7 +15,12 @@ Status key: **P1** worth doing soon · **P2** nice to have · **P3** cosmetic / 
 
 ## Playback & PO token
 
-### ~~P0 — DASH mode: locked-screen autoplay fails ("Couldn't load"), and the app can crash on screen-off~~ — code-complete 2026-10-17, NOT yet re-tested on device
+### ~~P0 — DASH mode: locked-screen autoplay fails ("Couldn't load"), and the app can crash on screen-off~~ — code-complete 2026-10-17; user-reported working on release 0.1.0 (2026-10-19)
+**2026-10-19:** the user reported "all works" after installing the 0.1.0 release (install, cold start,
+locked autoplay, lockscreen info, icon). That is a user report, not a log capture: it wasn't
+recorded whether that run was in DASH mode (0.1.0 still defaulted to SABR), so the specific
+`DASH: queued … / advanced into …` lines below remain unconfirmed. DASH became the default in 0.1.1.
+
 Captured on a physical Pixel (GrapheneOS), profile build, DASH mode, phone unplugged and locked
 (test video ended → next `TqxrNAfdy9Q`):
 - **Crash** at 23:35:29 as the screen went off: `ForegroundServiceStartNotAllowedException` from
@@ -775,6 +780,18 @@ randomises the install directory per install, so **comparing the `base.apk` path
 a quick way to tell whether a rebuild actually landed.**
 
 ---
+
+## Privacy
+
+### P2 — SponsorBlock lookups send the plain video ID
+`core/sponsorblock/SponsorBlock.kt` calls `/api/skipSegments?videoID=<id>`, and SponsorBlock is on by
+default (`PlayerViewModel`'s `PREF_SPONSOR` defaults to `true`), so the SponsorBlock server sees
+every video a user opens. That is disclosed in the README's Features section. SponsorBlock's API also has a
+k-anonymity form, `/api/skipSegments/<first 4 hex chars of sha256(videoId)>`, which returns the
+segments for every video sharing that hash prefix; the client then keeps the entry whose
+`videoID` matches. Switching to it hides which video was opened at no functional cost. Verify the
+endpoint and response shape against SponsorBlock's current API docs before changing it, then
+update the README sentence.
 
 ## Build reproducibility
 

@@ -1,8 +1,28 @@
-# Vidi (yt-android)
+# Vidi
 
-A modern Android client for YouTube whose YouTube protocol logic lives in an embedded JavaScript runtime. The Android side only knows about a stable bridge interface — Innertube, PO tokens, SABR, and BotGuard never leak into the UI or playback layers.
+A private, account-free YouTube client for Android. No sign-in, no ads, no tracking: your
+subscriptions, history and playlists live only on your phone, and the home feed is personalised on
+the device from what you watch.
 
 > Independent project — not affiliated with, endorsed by, or sponsored by YouTube or Google. See [Disclaimer](#disclaimer).
+
+## Features
+
+- **Home feed** built on your phone from your subscriptions, watch history and chosen topics, with
+  "Because you watched…" and "From your topics" rows
+- **Search** with suggestions, and **channel pages**
+- **Local subscriptions, history and playlists**, with no account; they never leave the device
+- **Background playback** with lockscreen and notification controls, and **picture-in-picture**
+- **Autoplay** of the next video, also with the screen locked
+- Quality picker, captions, audio-track selection for multi-language videos, and a sleep timer
+- Comments
+- [SponsorBlock](https://sponsor.ajay.app/) skipping of sponsor segments. It's on by default and
+  can be turned off in the player; while it's on, the ID of each video you open is sent to
+  SponsorBlock's server to look up its segments.
+
+Vidi talks to YouTube's and Google's servers to search, stream and pass YouTube's bot checks, like
+any client does. Apart from SponsorBlock as described above, it sends nothing anywhere else: there are
+no analytics or crash-reporting libraries.
 
 ## Download
 
@@ -10,6 +30,9 @@ Signed APKs are attached to each [GitHub Release](https://github.com/vidiapp-dev
 — download `Vidi-<version>.apk` on your phone and open it (Android asks once to allow installs from
 your browser or file manager). Each APK has a `.sha256` checksum next to it. Updates install over the
 previous version and keep your data. Vidi needs Android 8.0 or newer.
+
+To get updates automatically, add this repository's URL to [Obtainium](https://github.com/ImranR98/Obtainium),
+which installs new GitHub releases as they're published.
 
 Every release is signed with the same key. Its SHA-256 certificate fingerprint is:
 
@@ -25,40 +48,41 @@ Maintainers: see [`RELEASING.md`](RELEASING.md) for how releases are built and s
 
 ## Status
 
-| Milestone | Scope | State |
-|---|---|---|
-| **M1** | Runtime PoC — QuickJS embedded, youtubei.js loads, search works | ✅ complete |
-| **M2** | Playback PoC — PO token + direct stream URLs | ✅ complete — see [How playback works](#how-playback-works) |
-| **M3** | Media3 playback — adaptive video+audio on screen | ✅ complete |
-| **M4** | Production architecture — caching, failover, retries, logging | 🟡 retry/failover + client persistence done |
-| **M5** | Full app — home, search, player, settings | 🟡 bottom-nav shell · home feed · related videos · quality picker (subscriptions need login — deferred) |
+Vidi is **early software** (0.x): it's usable day to day, but expect rough edges. Known
+limitations:
+
+- **Streaming uses DASH by default**, with the quality picked when a video starts. The alternative,
+  YouTube's own adaptive SABR transport, is available in Settings but is **experimental** and not
+  reliable yet.
+- No sign-in, by design, so videos that need an account (age-restricted, members-only) can't play.
+- YouTube changes its internals regularly, and playback can break until Vidi catches up. Updates
+  ship as new [releases](https://github.com/vidiapp-dev/vidi/releases).
+
+Development notes and the open-issue list live in [`BACKLOG.md`](BACKLOG.md).
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ Android UI (Jetpack Compose)                                │
-│   ui/{home,search,subscriptions,player,theme}               │
+│   ui/{home,library,channel,player,settings,components}      │
 ├─────────────────────────────────────────────────────────────┤
-│ Playback (Media3 — future)                                  │
-│   player/{media3,datasource}                                │
+│ Playback (Media3 / ExoPlayer)                               │
+│   playback/  MediaSessionService, lockscreen, PiP actions   │
+│   player/    DASH + progressive data sources                │
+│   sabr/      SABR transport (experimental, PipePipe port)   │
 ├─────────────────────────────────────────────────────────────┤
 │ YoutubeBridge (Kotlin interface)                            │
 │   youtube/bridge/                                           │
-├─────────────────────────────────────────────────────────────┤
-│ QuickJsRuntime (engine + fetch/log/storage/po-token bridges)│
-│   youtube/runtime/                                          │
-├─────────────────────────────────────────────────────────────┤
+├──────────────────────────────┬──────────────────────────────┤
+│ Native Innertube client      │ QuickJsRuntime               │
+│   youtube/innertube/         │   youtube/runtime/           │
+│   search, browse, home feed, │   youtube-runtime.js         │
+│   comments (OkHttp)          │   (youtubei.js: /player,     │
+│                              │   client selection, ciphers) │
+├──────────────────────────────┴──────────────────────────────┤
 │ WebPoTokenProvider (hidden WebView)   ◄── PO token minting  │
 │   core/webpo/ + assets/po_token.html                        │
-├─────────────────────────────────────────────────────────────┤
-│ youtube-runtime.js (bundled asset)                          │
-│   js-runtime/ → npm run build                               │
-│   • polyfills (EventTarget, fetch, URL, Intl, ...)          │
-│   • Platform.load(...) injects our impls into youtubei.js   │
-│   • youtubei.js Innertube session                           │
-│   • googlevideo SabrStream                                  │
-│   • poTokenManager.js → bridges to WebPoTokenProvider       │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -69,68 +93,51 @@ independent RE writeups
 converged on this conclusion. We follow SmartTube's working pattern:
 QuickJS does everything else, a hidden WebView does the one thing it can't.
 
-**Hard rules** (per the architecture plan):
+**Ground rules:**
 
 - The UI layer **never** imports anything from `youtube/runtime` or `youtube/models` except via `YoutubeBridge`.
-- Media3 **never** sees PO tokens, SABR session IDs, or BotGuard internals — only opaque byte streams from a `YoutubeDataSource`.
-- All YouTube protocol changes are absorbed by upgrading `youtubei.js` / `bgutils-js` / `googlevideo` in `js-runtime/package.json`. Android code should not need to change.
+- Media3 **never** sees PO tokens, SABR session IDs, or BotGuard internals — only opaque byte streams from a data source.
+- Playback-protocol changes (clients, ciphers, `/player`) are absorbed as far as possible by upgrading
+  `youtubei.js` in `js-runtime/package.json`. Search, browse and the home feed use the faster native
+  Innertube client instead, so those need Kotlin changes when YouTube changes its responses.
 
 ## Repository layout
 
 ```
-yt-android/
-├── app/
-│   └── src/main/
-│       ├── java/com/example/ytclient/
-│       │   ├── App.kt                ← owns the single YoutubeBridge instance
-│       │   ├── MainActivity.kt       ← navigation only
-│       │   ├── core/                 ← cross-cutting (models, network, db)
-│       │   │   ├── models/
-│       │   │   ├── network/
-│       │   │   └── database/
-│       │   ├── player/               ← Media3 integration (M3+)
-│       │   │   ├── media3/
-│       │   │   └── datasource/
-│       │   ├── youtube/              ← Protocol layer (off-limits to UI)
-│       │   │   ├── bridge/           ← YoutubeBridge interface + impl
-│       │   │   ├── runtime/          ← QuickJsRuntime (engine + bindings)
-│       │   │   └── models/           ← Bridge DTOs
-│       │   └── ui/                   ← Compose screens
-│       │       ├── home/
-│       │       ├── search/
-│       │       ├── subscriptions/
-│       │       ├── player/
-│       │       └── theme/
-│       ├── assets/
-│       │   └── youtube-runtime.js    ← generated by `npm run build`
-│       └── AndroidManifest.xml
-├── js-runtime/                       ← JS bundle source
-│   ├── package.json
-│   ├── esbuild.config.mjs
-│   └── src/
-│       ├── index.js                  ← Platform.load + __yt surface
-│       ├── polyfills.js              ← browser-API polyfills
-│       ├── sha1.js                   ← SHA-1 for Platform shim
-│       └── shims/empty.js            ← stub for node:* imports
-├── build.gradle.kts                  ← root plugin versions
-└── README.md                         ← this file
+vidi/
+├── app/src/main/
+│   ├── java/com/example/ytclient/    ← code namespace (the app ID is io.github.vidiapp_dev.vidi)
+│   │   ├── App.kt                    ← owns the bridge, library and PO-token singletons
+│   │   ├── MainActivity.kt           ← navigation, picture-in-picture
+│   │   ├── core/                     ← local library, settings, SponsorBlock, PO tokens, perf
+│   │   ├── playback/                 ← MediaSessionService + controller (background, lockscreen)
+│   │   ├── player/                   ← Media3 data sources, format selection
+│   │   ├── sabr/                     ← SABR transport (experimental)
+│   │   ├── youtube/                  ← protocol layer (off-limits to the UI)
+│   │   │   ├── bridge/               ← YoutubeBridge interface + impl
+│   │   │   ├── innertube/            ← native Innertube client + parsers, home-feed engine
+│   │   │   ├── runtime/              ← QuickJsRuntime (engine + bindings)
+│   │   │   └── models/               ← bridge DTOs
+│   │   └── ui/                       ← Compose screens
+│   ├── java/org/schabi/newpipe/      ← SABR protocol code ported from PipePipeExtractor (GPL-3.0)
+│   └── assets/youtube-runtime.js     ← generated from js-runtime/ by the build
+├── js-runtime/                       ← JS bundle source (youtubei.js + polyfills, built by esbuild)
+├── .github/workflows/release.yml     ← tag-triggered signed release build (see RELEASING.md)
+└── BACKLOG.md                        ← open issues, investigations and their history
 ```
 
 ## Building
 
-Prerequisites: Android Studio (Hedgehog or newer), JDK 17, Node.js 18+, npm.
+Prerequisites: a recent Android Studio (its bundled JetBrains JDK 21 is what Gradle runs on), and
+Node.js 18+ with npm on the `PATH`.
 
-```bash
-# One-time: install JS deps
-cd js-runtime
-npm install
-cd ..
-```
+Open the project and hit **Run**. The Gradle build runs `npm install` and the esbuild bundle step
+(`buildJsRuntime` → `app/src/main/assets/youtube-runtime.js`) by itself whenever the JS sources or
+dependencies change.
 
-After that, just hit **Run** in Android Studio — the Gradle build will:
-1. Run `buildJsRuntime` (esbuild → `app/src/main/assets/youtube-runtime.js`) if any JS source changed.
-2. Run `mergeDebugAssets` to pick up the fresh bundle.
-3. Compile + install the APK.
+**Measure and test on the `profile` build type** (`./gradlew installProfile`), not `debug`: a
+debuggable build runs interpreted and was measured about 18× slower on cold start
+(`RUNTIME_PERF_PLAN.md`, E6). `profile` is the release configuration signed with your debug key.
 
 To rebuild only the JS bundle from the command line:
 ```bash
@@ -186,7 +193,11 @@ tag:QuickJsRuntime
 - `[fetch] POST https://www.youtube.com/youtubei/v1/search (2541b body)` — every HTTP request made by the JS runtime.
 - `callAsync(search) → String, len=8599, head={"videos":[...` — what came back from each bridge call.
 
-## How playback works
+## How playback works (historical, mid-2026)
+
+> This section and the next record how playback was first made to work, and are kept for their
+> lessons. The client list has changed since: the current choice and its reasoning are in the
+> `CLIENT_PREFERENCE` comment in `js-runtime/src/index.js`, and open issues are in `BACKLOG.md`.
 
 The working pipeline (after a long detour into SABR — see "M2 wall" below for
 the dead ends):
@@ -285,13 +296,6 @@ where independent researchers reached the same conclusion in mid-2026:
 > "I don't think it's possible to fully bypass a browser runtime since
 > that's what BotGuard checks for. SmartTube's WebView approach is good
 > enough imo." — InfinityLoop1308
-
-## Known limitations (M1)
-
-- No PO token → playback URLs that require one will fail. (Covered by M2.)
-- No session persistence — every app launch creates a fresh Innertube session. (M2 will add DataStore-backed token cache.)
-- `bridge.search` is the only method exposed.
-- `PlayerScreen` is a placeholder.
 
 ## License
 
