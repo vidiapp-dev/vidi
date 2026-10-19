@@ -8,11 +8,12 @@ import kotlinx.coroutines.flow.asStateFlow
 /**
  * Which transport the player should use to actually stream a video.
  *
- *  - [SABR]: YouTube's own adaptive transport (the default, and what every "normal" open uses).
+ *  - [SABR]: YouTube's own adaptive transport. Experimental: not reliable yet, so no longer the default.
  *    Quality adapts per-segment, but every session is attested: the streaming server answers each
  *    response with a StreamProtectionStatus, and it can decide mid-video that our PO token is no
  *    longer welcome (status=3), which no amount of rebuilding fixes.
- *  - [DASH]: the direct-URL / DASH-manifest path (`getLegacyPlayback`). No SABR session, therefore
+ *  - [DASH]: the direct-URL / DASH-manifest path (`getLegacyPlayback`); the default since 0.1.1,
+ *    because it is the transport that actually plays reliably today. No SABR session, therefore
  *    no attestation and nothing that can be "rejected" — at the cost of a fixed, up-front format
  *    selection rather than SABR's per-segment adaptation.
  *
@@ -57,7 +58,7 @@ class PlaybackSettings(context: Context) {
 
     private val _mode = MutableStateFlow(readPersistedMode())
 
-    /** The active transport choice. Defaults to [PlaybackMode.SABR] — today's behavior unchanged. */
+    /** The active transport choice. Defaults to [PlaybackMode.DASH] (see [DEFAULT_MODE]). */
     val mode: StateFlow<PlaybackMode> = _mode.asStateFlow()
 
     /** Persist [mode] and publish it to every observer (Settings screen, next video load). */
@@ -74,12 +75,19 @@ class PlaybackSettings(context: Context) {
      * lazy initialisation, where an exception would take the whole app down on launch.
      */
     private fun readPersistedMode(): PlaybackMode {
-        val stored = prefs.getString(KEY_MODE, null) ?: return PlaybackMode.SABR
-        return PlaybackMode.entries.firstOrNull { it.name == stored } ?: PlaybackMode.SABR
+        val stored = prefs.getString(KEY_MODE, null) ?: return DEFAULT_MODE
+        return PlaybackMode.entries.firstOrNull { it.name == stored } ?: DEFAULT_MODE
     }
 
     private companion object {
         const val PREFS = "playback_settings"
         const val KEY_MODE = "mode"
+
+        /**
+         * Used whenever no choice is stored. Only [setMode] ever writes one, and only on an actual
+         * change, so anyone who never touched the setting follows this default — flipping it moves
+         * them too, while someone who explicitly picked SABR keeps SABR.
+         */
+        val DEFAULT_MODE = PlaybackMode.DASH
     }
 }

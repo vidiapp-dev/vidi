@@ -55,16 +55,16 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
         // what the per-row `selectable` modifiers below are expected to be nested under.
         Column(Modifier.selectableGroup()) {
             PlaybackModeOption(
-                selected = mode == PlaybackMode.SABR,
-                title = "SABR",
-                description = "Adaptive, may require re-attestation",
-                onSelect = { viewModel.setPlaybackMode(PlaybackMode.SABR) },
-            )
-            PlaybackModeOption(
                 selected = mode == PlaybackMode.DASH,
-                title = "DASH",
+                title = "DASH (recommended)",
                 description = "Direct, no attestation, fixed quality selection",
                 onSelect = { viewModel.setPlaybackMode(PlaybackMode.DASH) },
+            )
+            PlaybackModeOption(
+                selected = mode == PlaybackMode.SABR,
+                title = "SABR (experimental)",
+                description = "Adaptive, may require re-attestation — not reliable yet",
+                onSelect = { viewModel.setPlaybackMode(PlaybackMode.SABR) },
             )
         }
 
