@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Vidi themed-icon layer (Android 13+ "Themed icons"). The system ignores these colours and tints
+  the shape with the wallpaper palette, so the design must work as a single-colour silhouette:
+  the iris is CUT OUT of the eye (evenOdd fill) instead of painted violet, and the play-button
+  pupil sits inside that hole. Same geometry and safe-zone reasoning as ic_launcher_foreground.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M27,54 Q54,28 81,54 Q54,80 27,54 Z M41,54 a13,13 0 1,0 26,0 a13,13 0 1,0 -26,0 Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineJoin="round"
+        android:pathData="M51,48 L51,60 L61,54 Z" />
+</vector>

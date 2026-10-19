@@ -1,0 +1,30 @@
+# Android/Gradle build output
+/build/
+/app/build/
+.gradle/
+
+# Android Studio / IntelliJ
+.idea/
+*.iml
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Machine-specific, must never be committed (contains local SDK path)
+local.properties
+
+# JS runtime deps (npm install; see README.md). The built bundle at
+# app/src/main/assets/youtube-runtime.js is left tracked for now -- say the word if you'd
+# rather gitignore it too and always regenerate via `npm run build`.
+js-runtime/node_modules/
+
+# Local build log (dev-machine artifact, not source)
+build.log
+
+# Scratch dir created while staging files for the Claude Cowork session
+_agent_stage_tmp/
+
+# OS noise
+.DS_Store
+Thumbs.db

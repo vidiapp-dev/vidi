@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Vidi brand violet: the adaptive icon's background layer. -->
+    <color name="ic_launcher_background">#5B45E0</color>
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <!-- Activity window theme. All UI is in Compose; this just suppresses the title bar. -->
+    <style name="AppTheme" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

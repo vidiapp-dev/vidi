@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en"><head><title></title><script>
+
+// po_token.html — BotGuard runner injected into a hidden Android WebView by
+// core/webpo/WebPoTokenProvider.kt.
+//
+// Adapted from SmartTube's PoTokenWebView implementation:
+// https://github.com/yuliskov/MediaServiceCore/blob/HEAD/youtubeapi/src/main/assets/potokennp2/po_token.html
+//
+// The Kotlin side:
+//   1. POSTs to https://www.youtube.com/api/jnn/v1/Create, parses the response
+//   2. Injects the parsed challenge data and calls runBotGuard(data)
+//   3. POSTs the resulting botguardResponse to /GenerateIT
+//   4. Injects the integrityToken into this VM
+//   5. Calls obtainPoToken(webPoSignalOutput, integrityToken, u8Identifier)
+//      whenever it needs a fresh per-identifier PO token
+
+// ── Old WebView polyfills (kept from SmartTube; cheap; minSdk 26 has these
+//    but doesn't hurt to leave them) ───────────────────────────────────────────
+if (typeof Promise === "undefined") {
+  (function () {
+    function Promise(fn) {
+      var state = "pending", value, deferred = [];
+      function resolve(newValue) {
+        try {
+          if (newValue && typeof newValue.then === "function") {
+            newValue.then(resolve, reject); return;
+          }
+          state = "resolved"; value = newValue;
+          setTimeout(function () { deferred.forEach(function (h) { h(value); }); }, 0);
+        } catch (e) { reject(e); }
+      }
+      function reject(reason) {
+        state = "rejected"; value = reason;
+        setTimeout(function () { deferred.forEach(function (h) { h(value); }); }, 0);
+      }
+      this.then = function (onResolved) {
+        return new Promise(function (resolve) {
+          deferred.push(function () { resolve(onResolved(value)); });
+          if (state === "resolved") resolve(value);
+        });
+      };
+      fn(resolve, reject);
+    }
+    window.Promise = Promise;
+  })();
+}
+if (typeof window.Symbol !== "function") {
+  (function() {
+    var idCounter = 0; var globalSymbolRegistry = {};
+    var SymbolPolyfill = function Symbol(description) {
+      description = description === undefined ? "" : String(description);
+      return "__@@symbol_" + description + "_" + (idCounter++) + "__";
+    };
+    SymbolPolyfill.for = function(key) {
+      key = String(key);
+      if (!globalSymbolRegistry[key]) globalSymbolRegistry[key] = SymbolPolyfill(key);
+      return globalSymbolRegistry[key];
+    };
+    SymbolPolyfill.keyFor = function(sym) {
+      for (var key in globalSymbolRegistry) if (globalSymbolRegistry[key] === sym) return key;
+      return undefined;
+    };
+    window.Symbol = SymbolPolyfill;
+  })();
+}
+
+/**
+ * Sets up the BotGuard VM. `challengeData` must contain at least
+ * { globalName, program }. The interpreter must already be installed
+ * on globalThis (via new Function(interpreterJavascript)() in runBotGuard).
+ */
+function loadBotGuard(challengeData) {
+  this.vm = this[challengeData.globalName];
+  this.program = challengeData.program;
+  this.vmFunctions = {};
+  this.syncSnapshotFunction = null;
+
+  if (!this.vm) throw new Error('[BotGuardClient]: VM not found in the global object');
+  if (!this.vm.a) throw new Error('[BotGuardClient]: Could not load program');
+
+  var vmFunctionsCallback = function (
+    asyncSnapshotFunction, shutdownFunction, passEventFunction, checkCameraFunction
+  ) {
+    this.vmFunctions = {
+      asyncSnapshotFunction: asyncSnapshotFunction,
+      shutdownFunction: shutdownFunction,
+      passEventFunction: passEventFunction,
+      checkCameraFunction: checkCameraFunction
+    };
+  };
+
+  this.syncSnapshotFunction = this.vm.a(
+    this.program, vmFunctionsCallback, true, this.userInteractionElement,
+    function () {/* no-op */}, [ [], [] ]
+  )[0];
+
+  // vmFunctionsCallback is invoked asynchronously by the BotGuard VM. Poll
+  // until asyncSnapshotFunction lands (typically within a few ms).
+  return new Promise(function (resolve, reject) {
+    var i = 0;
+    var refreshIntervalId = setInterval(function () {
+      if (!!this.vmFunctions.asyncSnapshotFunction) {
+        resolve(this); clearInterval(refreshIntervalId);
+      }
+      if (i >= 10000) { // 10 seconds
+        reject("asyncSnapshotFunction is null even after 10 seconds");
+        clearInterval(refreshIntervalId);
+      }
+      i += 1;
+    }, 1);
+  });
+}
+
+function snapshot(args) {
+  return new Promise(function (resolve, reject) {
+    if (!this.vmFunctions.asyncSnapshotFunction) {
+      return reject(new Error('[BotGuardClient]: Async snapshot function not found'));
+    }
+    this.vmFunctions.asyncSnapshotFunction(function (response) { resolve(response); }, [
+      args.contentBinding, args.signedTimestamp,
+      args.webPoSignalOutput, args.skipPrivacyBuffer
+    ]);
+  });
+}
+
+/**
+ * Wrap an arbitrary JS source string so `new Function(src)` works under a
+ * Trusted Types CSP. Real youtube.com sets `Content-Security-Policy:
+ * trusted-types ...` which makes `new Function(plainString)` throw EvalError.
+ * If `trustedTypes` API is present we mint a fresh policy and use its
+ * createScript trampoline; otherwise we return the raw string (works on
+ * pages without TT enforcement).
+ *
+ * 'allow-duplicates' is required in YT's CSP for unique-named policies to
+ * register; we try a random name first, fall back to a known YT policy name
+ * if random isn't accepted.
+ */
+function __trustedScript(src) {
+  if (typeof trustedTypes === 'undefined' || !trustedTypes.createPolicy) return src;
+  var attemptNames = [
+    'ytapp-bg-' + Math.random().toString(36).slice(2),
+    'youtube',
+    'default',
+  ];
+  for (var i = 0; i < attemptNames.length; i++) {
+    try {
+      var p = trustedTypes.createPolicy(attemptNames[i], {
+        createScript: function (s) { return s; }
+      });
+      return p.createScript(src);
+    } catch (e) {
+      // Try next name — policy refused (CSP doesn't allow this name).
+    }
+  }
+  console.warn('No Trusted Types policy accepted; falling back to raw string');
+  return src;
+}
+
+function runBotGuard(challengeData) {
+  // A fresh BotGuard run means a new minter; drop any cached mint callback so obtainPoToken
+  // re-derives it against the new state instead of reusing a stale one.
+  window.__ytMintCallback = null;
+  var interpreterJavascript =
+    challengeData.interpreterJavascript.privateDoNotAccessOrElseSafeScriptWrappedValue;
+  if (interpreterJavascript) {
+    var trustedSrc = __trustedScript(interpreterJavascript);
+    new Function(trustedSrc)();
+  } else throw new Error('Could not load VM');
+
+  var webPoSignalOutput = [];
+  return loadBotGuard({
+    globalName: challengeData.globalName,
+    globalObj: this,
+    program: challengeData.program
+  }).then(function (botguard) {
+    return botguard.snapshot({ webPoSignalOutput: webPoSignalOutput });
+  }).then(function (botguardResponse) {
+    return { webPoSignalOutput: webPoSignalOutput, botguardResponse: botguardResponse };
+  });
+}
+
+function obtainPoToken(webPoSignalOutput, integrityToken, identifier) {
+  var getMinter = webPoSignalOutput[0];
+  if (!getMinter) throw new Error('PMD:Undefined');
+
+  // CRITICAL: derive the mint callback ONCE and reuse it for every identifier. Calling
+  // getMinter(integrityToken) afresh on each mint makes the BotGuard minter accumulate internal
+  // state, so each minted token grows (~+64 bytes/mint) and the SABR server rejects the periodic
+  // re-attestation it needs to stream past ~60s. Caching the callback yields stable, valid tokens.
+  // Reset by runBotGuard() (fresh init / new integrity token).
+  if (!window.__ytMintCallback) {
+    var mintCallback = getMinter(integrityToken);
+    if (!(mintCallback instanceof Function)) throw new Error('APF:Failed');
+    window.__ytMintCallback = mintCallback;
+  }
+
+  var result = window.__ytMintCallback(identifier);
+  if (!result) throw new Error('YNJ:Undefined');
+  if (!(result instanceof Uint8Array)) throw new Error('ODM:Invalid');
+
+  return result;
+}
+</script></head><body></body></html>

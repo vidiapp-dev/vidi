@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Foreground media playback service (lockscreen / notification / background audio). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Android 13+: required to post the media-style notification. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Required by ExoPlayer's setWakeMode(WAKE_MODE_NETWORK) (see PlayerScreen) — acquiring the
+         wake/wifi lock throws a SecurityException at runtime without this, even though the
+         ExoPlayer.Builder call itself doesn't fail fast. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:name=".App"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:largeHeap="true"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <!--
+            No fixed screenOrientation: the player needs to rotate to landscape
+            for fullscreen. configChanges lets us handle rotation in-place so the
+            ExoPlayer/Compose state survives (no Activity recreation). The app
+            defaults to portrait via requestedOrientation set in MainActivity;
+            the player screen temporarily allows the sensor.
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:supportsPictureInPicture="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Hosts the in-process MediaSession so the system shows lockscreen / notification
+             controls. The ExoPlayer itself is owned by the player UI; this service only
+             publishes the session + foreground MediaStyle notification. -->
+        <service
+            android:name=".playback.PlaybackService"
+            android:exported="true"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService" />
+            </intent-filter>
+        </service>
+
+        <!-- Receives the PiP transport-control taps (play/pause, next). -->
+        <receiver
+            android:name=".playback.PiPActionReceiver"
+            android:exported="false" />
+
+    </application>
+</manifest>

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Vidi launcher icon, foreground layer: an eye whose pupil is a play button ("vidi" = "I saw").
+
+  Adaptive-icon geometry: a 108x108dp canvas of which the launcher shows roughly the middle 72dp,
+  under whatever mask it applies (circle, squircle, rounded square...). Only the central 66dp circle
+  is guaranteed visible under every mask, so everything here stays inside it: the eye spans
+  x 27..81 and y 41..67, at most 27dp from the centre (54,54) against the 33dp safe radius.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Eye: two quadratic lids meeting at the corners. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M27,54 Q54,28 81,54 Q54,80 27,54 Z" />
+    <!-- Iris, in the background violet so it reads as a hole showing through. -->
+    <path
+        android:fillColor="#5B45E0"
+        android:pathData="M41,54 a13,13 0 1,0 26,0 a13,13 0 1,0 -26,0 Z" />
+    <!-- Pupil: a play triangle, stroked in its own colour to round the corners. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeLineJoin="round"
+        android:pathData="M51,48 L51,60 L61,54 Z" />
+</vector>

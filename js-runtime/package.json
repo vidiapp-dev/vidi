@@ -1,0 +1,19 @@
+{
+  "name": "yt-android-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "description": "JS runtime bundle for yt-android. Bundles youtubei.js + bgutils-js + googlevideo into a single self-contained IIFE evaluated inside QuickJS on Android.",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "watch": "node esbuild.config.mjs --watch"
+  },
+  "dependencies": {
+    "youtubei.js": "^18.0.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.0": true
+  }
+}
