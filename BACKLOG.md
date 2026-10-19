@@ -860,7 +860,11 @@ a quick way to tell whether a rebuild actually landed.**
 
 ## Privacy
 
-### P2 — SponsorBlock lookups send the plain video ID
+### ~~P2 — SponsorBlock lookups send the plain video ID~~ — FIXED 2026-10-20
+
+**Fixed:** now uses `/api/skipSegments/<first 4 hex chars of sha256(videoId)>`, checked against the live API docs and the live endpoint. The response is `[{videoID, segments}]`, about 90 videos per prefix, and every returned id hashed back to the requested prefix. The client keeps its own `videoID`'s entry. Test video with segments: `nIT_S_l_iIQ` (`music_offtopic`). The README sentence is updated.
+
+Original report:
 `core/sponsorblock/SponsorBlock.kt` calls `/api/skipSegments?videoID=<id>`, and SponsorBlock is on by
 default (`PlayerViewModel`'s `PREF_SPONSOR` defaults to `true`), so the SponsorBlock server sees
 every video a user opens. That is disclosed in the README's Features section. SponsorBlock's API also has a

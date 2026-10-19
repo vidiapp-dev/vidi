@@ -17,11 +17,12 @@ the device from what you watch.
 - Quality picker, captions, audio-track selection for multi-language videos, and a sleep timer
 - Comments
 - [SponsorBlock](https://sponsor.ajay.app/) skipping of sponsor segments. It's on by default and
-  can be turned off in the player; while it's on, the ID of each video you open is sent to
-  SponsorBlock's server to look up its segments.
+  can be turned off in the player. Lookups are private: Vidi sends only the first 4 characters of a
+  hash of the video ID, and SponsorBlock answers for the ~100 videos that share it, so its server
+  can't tell which one you're watching.
 
 Vidi talks to YouTube's and Google's servers to search, stream and pass YouTube's bot checks, like
-any client does. Apart from SponsorBlock as described above, it sends nothing anywhere else: there are
+any client does. Apart from the SponsorBlock lookups described above, it sends nothing anywhere else: there are
 no analytics or crash-reporting libraries.
 
 ## Download
