@@ -38,10 +38,12 @@ have to uninstall (losing their history, subscriptions and playlists) and reinst
    | `VIDI_KEY_ALIAS` | `vidi` |
    | `VIDI_KEY_PASSWORD` | the same password again |
 
-   To base64-encode the keystore straight to the clipboard (PowerShell):
+   To base64-encode the keystore straight to the clipboard (PowerShell, run in the folder that holds
+   the keystore; `Resolve-Path` is needed because .NET resolves relative paths against the PowerShell
+   *process* directory, not the current location):
 
    ```
-   [Convert]::ToBase64String([IO.File]::ReadAllBytes("vidi-release.jks")) | Set-Clipboard
+   [Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path "vidi-release.jks"))) | Set-Clipboard
    ```
 
 4. **Note the certificate fingerprint** so users can verify downloads:
