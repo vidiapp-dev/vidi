@@ -137,7 +137,8 @@ dependencies change.
 
 **Measure and test on the `profile` build type** (`./gradlew installProfile`), not `debug`: a
 debuggable build runs interpreted and was measured about 18× slower on cold start
-(`RUNTIME_PERF_PLAN.md`, E6). `profile` is the release configuration signed with your debug key.
+(`RUNTIME_PERF_PLAN.md`, E6). `profile` is the release configuration signed with your debug key. Local builds
+install as a separate **Vidi Dev** app (`io.github.vidiapp_dev.vidi.dev`), next to any installed release.
 
 To rebuild only the JS bundle from the command line:
 ```bash

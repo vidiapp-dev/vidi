@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Local builds install next to the release (applicationIdSuffix .dev); label them apart. -->
+<resources>
+    <string name="app_name">Vidi Dev</string>
+</resources>

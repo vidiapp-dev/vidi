@@ -76,8 +76,10 @@ refuses to "update" to a lower versionCode.
 To rebuild an existing release (e.g. after fixing the workflow), run the workflow manually from the
 Actions tab and enter the tag; its assets are replaced.
 
-## Installing a release over a development build
+## Development builds and releases side by side
 
-A build you installed from Android Studio (`debug` or `profile`) is signed with your local debug
-key, not the release key, so Android won't let the release update it — uninstall the development
-build first. That loses its local data; the release starts fresh.
+Builds from Android Studio or Gradle (`debug`, `profile`) use the app ID
+`io.github.vidiapp_dev.vidi.dev` and show up as **Vidi Dev**, so they install next to a release
+instead of replacing it. Each app keeps its own data (history, subscriptions, playlists). A
+release can't be replaced by a local build anyway: it's signed with a different key and has a
+higher versionCode (Android reports `INSTALL_FAILED_VERSION_DOWNGRADE`).

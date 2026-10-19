@@ -53,6 +53,16 @@ android {
     }
 
     buildTypes {
+        // Local builds get their own app ID (io.github.vidiapp_dev.vidi.dev) and the label "Vidi Dev"
+        // (src/debug and src/profile res), so they install NEXT TO a published release instead of
+        // colliding with it: a release is signed with the release key and has a tag-derived
+        // versionCode, so Android refuses to replace it with a local build (INSTALL_FAILED_VERSION_DOWNGRADE,
+        // or a signature mismatch) and the only way through was uninstalling and losing its data.
+        // The two apps keep separate data. The release itself keeps the bare app ID — never change it.
+        debug {
+            applicationIdSuffix = ".dev"
+        }
+
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
@@ -89,6 +99,7 @@ android {
         create("profile") {
             initWith(getByName("release"))
             isDebuggable = false
+            applicationIdSuffix = ".dev" // see debug {} above
             signingConfig = signingConfigs.getByName("debug")
         }
     }
