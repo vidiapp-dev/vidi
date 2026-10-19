@@ -4,6 +4,15 @@ A modern Android client for YouTube whose YouTube protocol logic lives in an emb
 
 > Independent project — not affiliated with, endorsed by, or sponsored by YouTube or Google. See [Disclaimer](#disclaimer).
 
+## Download
+
+Signed APKs are attached to each [GitHub Release](https://github.com/vidiapp-dev/vidi/releases/latest)
+— download `Vidi-<version>.apk` on your phone and open it (Android asks once to allow installs from
+your browser or file manager). Each APK has a `.sha256` checksum next to it. Updates install over the
+previous version and keep your data. Vidi needs Android 8.0 or newer.
+
+Maintainers: see [`RELEASING.md`](RELEASING.md) for how releases are built and signed.
+
 ## Status
 
 | Milestone | Scope | State |

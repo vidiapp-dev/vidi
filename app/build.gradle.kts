@@ -27,14 +27,37 @@ android {
         applicationId = "io.github.vidiapp_dev.vidi"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // Release builds get these from the git tag (vMAJOR.MINOR.PATCH -> versionName MAJOR.MINOR.PATCH,
+        // versionCode MAJOR*10000 + MINOR*100 + PATCH), passed in as -Pvidi.versionCode /
+        // -Pvidi.versionName by .github/workflows/release.yml. Android only installs an update whose
+        // versionCode is HIGHER than the installed one, so it has to increase with every release --
+        // deriving it from the tag makes that automatic. Local builds fall back to a dev version.
+        versionCode = (project.findProperty("vidi.versionCode") as String?)?.toInt() ?: 1
+        versionName = (project.findProperty("vidi.versionName") as String?) ?: "0.0.0-dev"
+    }
+
+    // Release signing, defined ONLY when the release workflow supplies the keystore through the
+    // environment (see RELEASING.md). That keeps a local `assembleRelease` working exactly as before
+    // -- producing an unsigned APK -- instead of failing for want of a key nobody has locally. CI
+    // refuses to publish anything that didn't come out signed.
+    signingConfigs {
+        val keystore = System.getenv("VIDI_KEYSTORE_FILE")
+        if (keystore != null) {
+            create("release") {
+                storeFile = file(keystore)
+                storePassword = System.getenv("VIDI_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("VIDI_KEY_ALIAS")
+                keyPassword = System.getenv("VIDI_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            // null (unsigned) unless the release keystore was provided -- see signingConfigs above.
+            signingConfig = signingConfigs.findByName("release")
         }
 
         // Day-to-day / performance-testing build: release behaviour, debug signing.

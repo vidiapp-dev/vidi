@@ -1,0 +1,130 @@
+# Builds a signed release APK and publishes it as a GitHub Release.
+#
+# Trigger: push a tag like v0.1.0 (or run it manually for an existing tag). See RELEASING.md for the
+# one-time keystore/secrets setup and the release checklist.
+#
+# Builds the `release` build type: non-debuggable, so ART compiles it normally. A debuggable build
+# runs this app's code interpreted and was measured ~18x slower on cold start
+# (RUNTIME_PERF_PLAN.md, E6) — which is why nothing debuggable is ever published.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write # create the release and upload its assets
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # The manual input is passed through env and validated here rather than interpolated into the
+      # script, so a crafted value can't inject shell commands.
+      - name: Resolve tag and version
+        id: version
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          TAG="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]?)$ ]]; then
+            echo "::error::Tag '$TAG' must look like vMAJOR.MINOR.PATCH, minor and patch below 100 (e.g. v0.1.0)"
+            exit 1
+          fi
+          CODE=$(( BASH_REMATCH[1] * 10000 + BASH_REMATCH[2] * 100 + BASH_REMATCH[3] ))
+          if (( CODE < 1 )); then echo "::error::v0.0.0 can't be released (versionCode must be > 0)"; exit 1; fi
+          {
+            echo "tag=$TAG"
+            echo "name=${TAG#v}"
+            echo "code=$CODE"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG as versionName ${TAG#v}, versionCode $CODE"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21" # matches the Android Studio JBR the project is developed with
+
+      # The Gradle build runs `npm install` + esbuild itself (app/build.gradle.kts); the tracked
+      # js-runtime/package-lock.json pins exactly the JS dependencies that were tested.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Decode signing keystore
+        env:
+          VIDI_KEYSTORE_BASE64: ${{ secrets.VIDI_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$VIDI_KEYSTORE_BASE64" ]; then
+            echo "::error::Repository secret VIDI_KEYSTORE_BASE64 is not set — see RELEASING.md"
+            exit 1
+          fi
+          echo "$VIDI_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/vidi-release.jks"
+          echo "VIDI_KEYSTORE_FILE=$RUNNER_TEMP/vidi-release.jks" >> "$GITHUB_ENV"
+
+      - name: Run unit tests and build the release APK
+        env:
+          VIDI_KEYSTORE_PASSWORD: ${{ secrets.VIDI_KEYSTORE_PASSWORD }}
+          VIDI_KEY_ALIAS: ${{ secrets.VIDI_KEY_ALIAS }}
+          VIDI_KEY_PASSWORD: ${{ secrets.VIDI_KEY_PASSWORD }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: >-
+          ./gradlew --no-daemon :app:testReleaseUnitTest :app:assembleRelease
+          "-Pvidi.versionCode=$VERSION_CODE" "-Pvidi.versionName=$VERSION_NAME"
+
+      # Refuse to publish anything unsigned: an unsigned build is named app-release-unsigned.apk, so
+      # the existence check alone catches a missing signing config; apksigner then proves the
+      # signature is valid and prints the certificate digest into the log.
+      - name: Verify signature and prepare assets
+        id: apk
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          APK=app/build/outputs/apk/release/app-release.apk
+          if [ ! -f "$APK" ]; then
+            echo "::error::$APK not found — was the APK built unsigned?"
+            ls -R app/build/outputs/apk || true
+            exit 1
+          fi
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$APKSIGNER" verify --print-certs "$APK"
+          OUT="Vidi-$VERSION_NAME.apk"
+          cp "$APK" "$OUT"
+          sha256sum "$OUT" > "$OUT.sha256"
+          echo "file=$OUT" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          FILE: ${{ steps.apk.outputs.file }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            # Re-running for an existing release: replace its assets instead of failing.
+            gh release upload "$TAG" "$FILE" "$FILE.sha256" --clobber
+          else
+            gh release create "$TAG" "$FILE" "$FILE.sha256" \
+              --verify-tag --title "Vidi ${TAG#v}" --generate-notes
+          fi
+
+      - name: Remove keystore from the runner
+        if: always()
+        run: rm -f "$RUNNER_TEMP/vidi-release.jks"

@@ -28,3 +28,7 @@ _agent_stage_tmp/
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Release signing keys — never commit (see RELEASING.md)
+*.jks
+*.keystore

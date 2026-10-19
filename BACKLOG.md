@@ -778,7 +778,15 @@ a quick way to tell whether a rebuild actually landed.**
 
 ## Build reproducibility
 
-### P2 — `js-runtime/package-lock.json` is gitignored, but the Gradle build treats it as load-bearing
+### P2 — `js-runtime/package-lock.json` is gitignored, but the Gradle build treats it as load-bearing `[x]`
+
+**Resolved 2026-10-19 with option 1:** the lockfile is now tracked. This became necessary rather than
+optional once releases were built by CI (`.github/workflows/release.yml`) on a fresh Linux checkout:
+without the lockfile, every release would bundle whatever youtubei.js was newest that day. The
+platform worry below turned out not to apply: a lockfileVersion 3 file records *every* platform's
+`@esbuild/*` optional package (win32-x64, linux-x64, darwin-arm64, …), and npm installs only the one
+that matches the machine. So one lockfile works for both the Windows dev build and the Linux CI build.
+The original analysis follows.
 `js-runtime/.gitignore` ignores `package-lock.json` (alongside `yarn.lock` / `pnpm-lock.yaml`),
 while `app/build.gradle.kts` declares it an input to BOTH `npmInstall` and `buildJsRuntime`, with a
 comment explaining at length why it is not redundant with `package.json`:

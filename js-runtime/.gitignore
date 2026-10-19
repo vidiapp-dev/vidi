@@ -1,4 +1,8 @@
 node_modules/
-package-lock.json
+# package-lock.json is deliberately TRACKED. app/build.gradle.kts treats it as a build input, and
+# without it every fresh checkout -- the release CI included -- would resolve package.json's ^ranges
+# to whatever is newest that day, so a published APK could contain a different youtubei.js than the
+# one that was tested. It records every platform's esbuild binary, so one lockfile serves Windows
+# and Linux builds alike; npm only installs the one matching the machine.
 yarn.lock
 pnpm-lock.yaml
