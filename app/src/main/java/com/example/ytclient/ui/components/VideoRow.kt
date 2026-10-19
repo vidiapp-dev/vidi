@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -72,10 +73,18 @@ fun VideoRow(
 ) {
     val library = (LocalContext.current.applicationContext as App).library
     val subscribed by library.subscribedChannelIds.collectAsState()
-    val fractions by library.watchedFractions.collectAsState()
+    // The State itself, NOT its value: reading `.value` here would make every card on screen
+    // recompose whenever ANY video's progress changes — and the player saves progress every 5 s for
+    // the whole length of every video, with the tab list still composed under the mini-player.
+    // derivedStateOf below reads it instead, so a card only recomposes when ITS fraction changes.
+    val fractionsState = library.watchedFractions.collectAsState()
 
     val isSubscribed = video.channelId != null && subscribed.contains(video.channelId)
-    val watchedFraction = fractions[video.id]
+    val watchedFractionState = remember(video.id, fractionsState) {
+        derivedStateOf { fractionsState.value[video.id] }
+    }
+    // A plain local (not a `by` delegate) so the null check below can smart-cast it.
+    val watchedFraction = watchedFractionState.value
     var showDialog by remember(video.id) { mutableStateOf(false) }
     var showHideMenu by remember(video.id) { mutableStateOf(false) }
     val channelId = video.channelId

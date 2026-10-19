@@ -437,7 +437,11 @@ load. A topic toggle or Retry tap in that window started a second concurrent `ge
 call `rankAndReplace`, so the later-resolving one wins and can show the pre-toggle topic set.
 Moved above `init`.
 
-### P1 — `publishSabr` is a non-atomic read-modify-write; a leaked session keeps POSTing
+### ~~P1 — `publishSabr` is a non-atomic read-modify-write; a leaked session keeps POSTing~~ — code-complete 2026-10-20, NOT yet built or run
+
+**Addressed 2026-10-20:** `publishSabr` now swaps with `_sabr.getAndUpdate { next }` and releases exactly the value it displaced.
+
+Original report:
 `PlayerViewModel.publishSabr` does `val displaced = currentSabrHolder()` then `_sabr.value = next`
 as two separate steps, while its own doc claims the pattern makes a leak "unrepresentable regardless
 of interleaving". It doesn't. Every caller runs on `Dispatchers.IO` (`rebuildSabr`,
@@ -568,6 +572,9 @@ strictly worse than neither having it — so if bisecting, the complete fix is t
 not `24ec0be`.
 
 ### P2 — `_ranked` is unbounded, and every append regroups the whole list on the main thread
+
+**2026-10-20, still deliberately open:** capping by dropping the oldest entries would also drop them from `rankAndAppendBatch`'s already-shown dedup, so videos the user scrolled past could come back as "new". A real fix needs a separate, bounded seen-id set. The memory itself (a few thousand small objects in a long session) isn't urgent now that grouping runs off the main thread.
+
 Nothing trims it. At ~30 videos/page an hour of scrolling is 1200-1800 `Ranked` entries retained for
 the ViewModel's life; `rows` then re-runs `HomeGrouper.group` (a `distinctBy` plus bucketing plus two
 sorts) over the entire list on the main dispatcher on every append, and `publishRanked()` rebuilds a
@@ -585,26 +592,42 @@ shrinking. Relevant mitigation from the same pass: E2 stopped the grouped layout
 auto-paging itself several times on cold start, which was the fastest way to grow this list without
 the user doing anything. Capping remains genuinely open.
 
-### P2 — `feedHasMore` is shared between the "For you" and category feeds
+### ~~P2 — `feedHasMore` is shared between the "For you" and category feeds~~ — code-complete 2026-10-20, NOT yet built or run
+
+**Addressed 2026-10-20:** Split into `forYouHasMore` / `categoryHasMore`. The same pass found a worse race: a category fetch landing after the user switched chips published that category's videos under the new chip, and a late "For you" page did the same because `publishRanked` published regardless of category. `loadCategory`, `refresh` and `loadMore` now drop results for a category that is no longer selected, and `publishRanked` returns unless "For you" is active.
+
+Original report:
 `selectCategory("For you")`'s restore path (added last session) republishes `_ranked` without
 restoring `feedHasMore`. Scroll a category to its end, switch back to "For you", and infinite scroll
 is dead there until a pull-to-refresh.
 Fix: separate `forYouHasMore` / `categoryHasMore`.
 
-### P2 — `topicsAtLastFetch` is stamped before the fetch, not after it succeeds
+### ~~P2 — `topicsAtLastFetch` is stamped before the fetch, not after it succeeds~~ — code-complete 2026-10-20, NOT yet built or run
+
+**Addressed 2026-10-20:** Stamped only after `rankAndReplace` has shown the page, in both `loadFeed` and `refresh`.
+
+Original report:
 Contradicts its own doc ("the set the currently-shown feed was actually fetched with"). If
 `getHomeFeed` throws, the catch deliberately keeps stale content on screen — but the stamp already
 moved, so every later dismissal of the topic sheet short-circuits and the toggle appears inert until
 an unrelated refresh.
 Fix: stamp in the success branch.
 
-### P2 — Non-`@Volatile` cross-thread fields
+### ~~P2 — Non-`@Volatile` cross-thread fields~~ — code-complete 2026-10-20, NOT yet built or run
+
+**Addressed 2026-10-20:** `forYouHasMore`, `categoryHasMore`, `searchHasMore` and `topicsAtLastFetch` are `@Volatile`.
+
+Original report:
 `feedHasMore`, `searchHasMore`, `topicsAtLastFetch` are written from IO coroutines and read from the
 main thread with no happens-before edge; the main thread can keep observing a stale
 `feedHasMore == false`. (`PlayerViewModel.loadedVideoId` had the same problem for the pump thread and
 was fixed 2026-08-27.)
 
-### P2 — `QuickJsRuntime.initialize()` has no lock
+### ~~P2 — `QuickJsRuntime.initialize()` has no lock~~ — code-complete 2026-10-20, NOT yet built or run
+
+**Addressed 2026-10-20:** `initialize()` runs under its own `initLock` Mutex, and a failed init closes its half-built engine instead of leaking it. `close()` now closes the engine on its own JS thread and shuts that executor down (it's terminal).
+
+Original report:
 `withContext(jsDispatcher)` serialises threads, not coroutines: `qjs.evaluate(script)` suspends,
 letting a second concurrent `initialize()` see `initialized == false`, call `QuickJs.create()` again
 and overwrite the field — leaking a native context and re-registering every binding. Reachable from
@@ -612,7 +635,11 @@ and overwrite the field — leaking a native context and re-registering every bi
 Also: `close()` calls `quickJs?.close()` on the caller's thread (main, from `App`), violating the
 one-thread invariant stated at the top of the same file, and never shuts the executor down.
 
-### P2 — `AppSabrPoTokenProvider.runBlocking` can park the only pump thread indefinitely
+### ~~P2 — `AppSabrPoTokenProvider.runBlocking` can park the only pump thread indefinitely~~ — code-complete 2026-10-20, NOT yet built or run
+
+**Addressed 2026-10-20:** The wait is now bounded by WebPoTokenProvider's own timeouts (2026-10-19 fix). An `InterruptedException` from `runBlocking` restores the interrupt flag instead of swallowing it.
+
+Original report:
 The class doc says blocking "is fine here (never the UI/JS thread)", but this is the single thread
 feeding both readers, and the `mintMutex` wait it blocks on is unbounded (see the P1 above). While
 parked, `SabrSegmentDataSource.awaitSegment` counts toward its 120s stall timeout and the buffer
@@ -620,7 +647,11 @@ drains. Secondary: `runBlocking` rethrows `InterruptedException`, which the surr
 `catch (t: Throwable)` swallows without restoring the interrupt flag, so `release()`'s interrupt is
 lost and the pump runs another round.
 
-### P2 — `PlayerScreen`'s related list self-triggers, and can crash on duplicate keys
+### ~~P2 — `PlayerScreen`'s related list self-triggers, and can crash on duplicate keys~~ — code-complete 2026-10-20, NOT yet built or run
+
+**Addressed 2026-10-20:** The first page is now de-duped like the append path, and `loadMoreRelated` claims its in-flight flag before launching (two triggers in one frame could advance the cursor twice). The self-trigger half is not reachable today: `relatedHasMore` is false until related content has loaded, so the early trigger is a no-op.
+
+Original report:
 Two separate issues in the same list:
  * its paging `derivedStateOf` uses `?: 0` rather than an early false, so before related content
    loads the page's two items satisfy the condition and page with nobody scrolling;
@@ -629,7 +660,11 @@ Two separate issues in the same list:
    assignment does not, so a repeated id throws `IllegalArgumentException: Key … was already used`
    and takes down the player. `VideoList` defends against exactly this; `PlayerScreen` doesn't.
 
-### P2 — Conditionally-remembered state loses scroll position
+### ~~P2 — Conditionally-remembered state loses scroll position~~ — code-complete 2026-10-20, NOT yet built or run
+
+**Addressed 2026-10-20:** Hoisted: HomeScreen's pull-refresh state, `feedListState` and `wasRefreshing` now sit above the suggestions return; PlayerScreen's `contentListState` and `upNextDismissed` sit above the fullscreen/PiP and mini returns.
+
+Original report:
 Several `remember`s sit below early returns, so they are torn down and recreated:
  * `HomeScreen`: `feedListState`, the pull-refresh state and `wasRefreshing` are declared after the
    `if (showSuggestions) { … return@Column }` block — typing one character into search and clearing
@@ -640,7 +675,11 @@ Several `remember`s sit below early returns, so they are torn down and recreated
    these transitions; this state sits outside it.
 Fix: hoist the declarations above the early returns.
 
-### P2 — Mini/collapse animation recomposes the whole app shell per frame
+### ~~P2 — Mini/collapse animation recomposes the whole app shell per frame~~ — code-complete 2026-10-20, NOT yet built or run
+
+**Addressed 2026-10-20:** The overlay is its own `PlayerOverlay` composable. `collapse` is read only in `derivedStateOf` (`mini`, `settled`) and inside the `graphicsLayer` block, where scale and translation are now computed. PlayerScreen takes `mini: Boolean` instead of the per-frame `collapseFraction`.
+
+Original report:
 `val f = collapse.value` is read inside `playing?.let { }`, and `let` is inline — so the read belongs
 to `BoxWithConstraints`'s content lambda, the same scope holding the `Scaffold` and every tab screen.
 The `graphicsLayer` block only assigns pre-computed locals, so the state is read during composition,
@@ -649,7 +688,11 @@ type), so its whole body re-runs on every drag frame.
 Fix: read the animatable *inside* the `graphicsLayer` lambda, and move the `playing?.let` body into
 its own `@Composable` so invalidation can't reach the `Scaffold`.
 
-### P2 — Every visible card recomposes every 5 seconds during playback
+### ~~P2 — Every visible card recomposes every 5 seconds during playback~~ — code-complete 2026-10-20, NOT yet built or run
+
+**Addressed 2026-10-20:** The `playlists` half was already fixed (it's read inside the dialog branch). Now VideoRow/VideoCard collect `watchedFractions` as a `State` and read it only through `remember(video.id) { derivedStateOf { … } }`, so a progress save recomposes only that video's card.
+
+Original report:
 `VideoRow` and `VideoCard` each `collectAsState()` three library flows at row scope.
 `persistHistory` reassigns `_watchedFractions.value` to a fresh map, and the player calls
 `updateProgress` on a `while (true) { delay(5000) }` loop — and since the mini-player now leaves the
@@ -660,6 +703,16 @@ Fix: move the `playlists` read into the dialog; derive per-row watched fraction 
 `remember(video.id) { derivedStateOf { fractions[video.id] } }`.
 
 ### P3 — Smaller items
+
+**Status 2026-10-20:**
+ * `LaunchedEffect(forcePlay?.value)`: **not a bug.** A key change restarts the effect with the current composition's `player`, and a rebuilt player starts with `playWhenReady = true` anyway. Adding `player` as a key would be harmful: it would force-play an adopted player the user had paused.
+ * Hide lists: **already fixed** (`MAX_HIDDEN_CHANNELS` / `MAX_HIDDEN_VIDEOS`).
+ * `saveCachedHomeFeed`: **fixed.** It now takes a `Sequence`, so callers no longer copy the whole accumulated feed.
+ * `onCollapseDrag` coroutine per move: **won't fix.** It's cheap next to the per-frame recomposition removed above, and a channel-based rewrite would change the ordering between drags and the settle animation.
+ * `awaitSegment` vs released state: **deliberately not changed.** After a quality switch the OLD player can keep reading from the just-released holder until Compose rebuilds it, which can be a long time with the screen locked. Failing those reads at once would reach `onPlayerError` on a player that isn't marked `releasing` yet and start a spurious rebuild. The slow failure is the safer one.
+ * `SabrStreamPump.DEBUG`: left on while SABR is still being debugged.
+
+Original list:
  * `LaunchedEffect(forcePlay?.value)` omits `mediaKey`/`player`, so after a quality switch or error
    retry the effect doesn't restart and PiP resume can silently not apply.
  * `LibraryStore`'s hide lists are the only unbounded collections in a class that caps history,

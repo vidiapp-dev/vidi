@@ -20,6 +20,7 @@ import com.example.ytclient.playback.PiPActionReceiver
 import com.example.ytclient.playback.PlaybackController
 import kotlinx.coroutines.launch
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.runtime.LaunchedEffect
@@ -41,6 +42,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -354,106 +356,143 @@ private fun AppRoot(inPip: Boolean, onVideoOpenChange: (Boolean) -> Unit) {
         }
 
         playing?.let { req ->
-            val f = collapse.value
-            val mini = f >= 0.5f
-            // Sized close to Android's own system PiP default window (roughly 220dp wide at 16:9)
-            // rather than the smaller card this started at, so the in-app mini player doesn't look
-            // noticeably tinier than the out-of-app PiP window it's meant to mirror.
-            val miniWidth = 220.dp
-            val miniHeight = 124.dp
-            val density = LocalDensity.current
-
-            // Where the card is ALLOWED to sit: fully inside the viewport, inset by the margins
-            // above. maxOf keeps the range non-empty — coerceIn throws when min > max, which a
-            // viewport too small to hold the card at all would otherwise produce.
-            val minX = MINI_MARGIN
-            val maxX = maxOf(MINI_MARGIN, maxWidth - miniWidth - MINI_MARGIN)
-            val minY = MINI_MARGIN
-            val maxY = maxOf(MINI_MARGIN, maxHeight - miniHeight - MINI_BOTTOM_INSET)
-
-            // Null until the user actually drags the card, so it docks bottom-right exactly where it
-            // always did, then stays wherever they put it. Remembered INSIDE `playing?.let` on
-            // purpose: the position survives collapse/expand cycles (same card being moved around)
-            // but a different video tears this branch down and rebuilds it, re-docking the card
-            // rather than reopening in some corner the user left it in during an unrelated video.
-            var miniUserX by remember { mutableStateOf<Dp?>(null) }
-            var miniUserY by remember { mutableStateOf<Dp?>(null) }
-            val miniOffsetX = (miniUserX ?: maxX).coerceIn(minX, maxX)
-            val miniOffsetY = (miniUserY ?: maxY).coerceIn(minY, maxY)
-
-            // Drag deltas from the mini card (see PlayerScreen's mini branch). Clamped on every
-            // step, so a fast drag toward an edge stops AT the edge instead of carrying the card
-            // partly off-screen. Reads the backing state rather than the captured `miniOffsetX`
-            // above so a stale closure can't rewind the position mid-gesture.
-            fun onMiniDrag(dxPx: Float, dyPx: Float) {
-                with(density) {
-                    miniUserX = ((miniUserX ?: maxX) + dxPx.toDp()).coerceIn(minX, maxX)
-                    miniUserY = ((miniUserY ?: maxY) + dyPx.toDp()).coerceIn(minY, maxY)
-                }
-            }
-
-            // The REAL Compose-measured size/position is a hard, DISCRETE jump between exactly
-            // full-screen and the mini card's dimensions — never a continuous interpolation of it.
-            // This is the actual fix for the mini-player's "video stuck at a stale, corner-pinned
-            // size" bug: continuously animating this Box's real size on every drag frame was resizing
-            // the embedded PlayerView's SurfaceView that many times too, and SurfaceView's video buffer
-            // resizes asynchronously from the View's own layout pass — it fell behind and got stuck. A
-            // single hard jump (exactly like the fullscreen toggle already did safely, long before any
-            // of this) never trips that: the surface only ever actually resizes once per crossing.
-            val realWidth = if (mini) miniWidth else maxWidth
-            val realHeight = if (mini) miniHeight else maxHeight
-            val realOffsetX = if (mini) miniOffsetX else 0.dp
-            val realOffsetY = if (mini) miniOffsetY else 0.dp
-
-            // The SMOOTH, continuous "tracks your finger" appearance is a graphicsLayer transform on
-            // top of that fixed real geometry instead — a draw-time-only property that never touches
-            // layout/measure, so it animates freely without going anywhere near the resize problem
-            // above. scale/translation are computed so the (real, currently fixed-size) box RENDERS as
-            // the exact rect the old continuous lerp described — and because rendered size is always
-            // realSize * (visualSize / realSize) = visualSize regardless of which regime realSize is
-            // currently in, the visual result stays perfectly continuous straight through the instant
-            // `mini` flips and the real jump happens.
-            val visualWidth = lerp(maxWidth, miniWidth, f)
-            val visualOffsetX = lerp(0.dp, miniOffsetX, f)
-            val visualOffsetY = lerp(0.dp, miniOffsetY, f)
-            val scale = visualWidth / realWidth
-            val translationXPx = with(density) { (visualOffsetX - realOffsetX).toPx() }
-            val translationYPx = with(density) { (visualOffsetY - realOffsetY).toPx() }
-
-            // Only round the corners once actually at rest at one of the two ends (not mid-drag or
-            // mid-settle-animation): in between, the render can be LARGER than the real (just-jumped)
-            // box — see the scale comment above — and clipping would cut that overflow off at the
-            // smaller box's edge. Square corners for the sub-second a settle animation is still running
-            // isn't something anyone will actually notice.
-            val settled = f <= 0f || f >= 1f
-            Box(
-                modifier = Modifier
-                    .offset(x = realOffsetX, y = realOffsetY)
-                    .size(width = realWidth, height = realHeight)
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        translationX = translationXPx
-                        translationY = translationYPx
-                        transformOrigin = TransformOrigin(0f, 0f)
-                    }
-                    .then(if (settled && mini) Modifier.clip(RoundedCornerShape(8.dp)) else Modifier),
-            ) {
-                PlayerScreen(
-                    initialVideos = req.videos,
-                    initialIndex = req.index,
-                    autoplayRelated = req.autoplayRelated,
-                    onBack = { playing = null },
-                    onOpenChannel = { cid -> playing = null; selectedChannel = cid },
-                    inPip = inPip,
-                    collapseFraction = f,
-                    onCollapseDrag = ::onCollapseDrag,
-                    onCollapseDragEnd = ::onCollapseDragEnd,
-                    onMiniDrag = ::onMiniDrag,
-                    onExpand = { collapseScope.launch { collapse.animateTo(0f) } },
-                    onMinimize = { collapseScope.launch { collapse.animateTo(1f) } },
-                )
-            }
+            PlayerOverlay(
+                req = req,
+                collapse = collapse,
+                maxWidth = maxWidth,
+                maxHeight = maxHeight,
+                inPip = inPip,
+                onBack = { playing = null },
+                onOpenChannel = { cid -> playing = null; selectedChannel = cid },
+                onCollapseDrag = ::onCollapseDrag,
+                onCollapseDragEnd = ::onCollapseDragEnd,
+                onExpand = { collapseScope.launch { collapse.animateTo(0f) } },
+                onMinimize = { collapseScope.launch { collapse.animateTo(1f) } },
+            )
         }
+    }
+}
+
+/**
+ * The player layered over the tabs, sized and positioned by [collapse] (0 = expanded, 1 = mini card).
+ *
+ * Its own composable, and [collapse] is only ever read inside derivedStateOf or the graphicsLayer
+ * block, never directly during composition. It used to be read inline in AppRoot's
+ * `playing?.let { }` — and `let` is inline, so the read belonged to BoxWithConstraints' content
+ * lambda, the scope holding the Scaffold and every tab screen: each drag or settle-animation frame
+ * recomposed the whole app shell, and PlayerScreen (which can't skip) with it. Now a frame only
+ * re-runs the graphicsLayer block, and composition only re-runs when [mini]/[settled] actually flip.
+ */
+@Composable
+private fun PlayerOverlay(
+    req: PlaybackRequest,
+    collapse: Animatable<Float, AnimationVector1D>,
+    maxWidth: Dp,
+    maxHeight: Dp,
+    inPip: Boolean,
+    onBack: () -> Unit,
+    onOpenChannel: (String) -> Unit,
+    onCollapseDrag: (Float) -> Unit,
+    onCollapseDragEnd: (Float) -> Unit,
+    onExpand: () -> Unit,
+    onMinimize: () -> Unit,
+) {
+    val mini by remember(collapse) { derivedStateOf { collapse.value >= 0.5f } }
+    // Sized close to Android's own system PiP default window (roughly 220dp wide at 16:9)
+    // rather than the smaller card this started at, so the in-app mini player doesn't look
+    // noticeably tinier than the out-of-app PiP window it's meant to mirror.
+    val miniWidth = 220.dp
+    val miniHeight = 124.dp
+    val density = LocalDensity.current
+
+    // Where the card is ALLOWED to sit: fully inside the viewport, inset by the margins
+    // above. maxOf keeps the range non-empty — coerceIn throws when min > max, which a
+    // viewport too small to hold the card at all would otherwise produce.
+    val minX = MINI_MARGIN
+    val maxX = maxOf(MINI_MARGIN, maxWidth - miniWidth - MINI_MARGIN)
+    val minY = MINI_MARGIN
+    val maxY = maxOf(MINI_MARGIN, maxHeight - miniHeight - MINI_BOTTOM_INSET)
+
+    // Null until the user actually drags the card, so it docks bottom-right exactly where it
+    // always did, then stays wherever they put it. Remembered INSIDE this overlay (called from
+    // AppRoot's `playing?.let`) on purpose: the position survives collapse/expand cycles (same card being moved around)
+    // but a different video tears this branch down and rebuilds it, re-docking the card
+    // rather than reopening in some corner the user left it in during an unrelated video.
+    var miniUserX by remember { mutableStateOf<Dp?>(null) }
+    var miniUserY by remember { mutableStateOf<Dp?>(null) }
+    val miniOffsetX = (miniUserX ?: maxX).coerceIn(minX, maxX)
+    val miniOffsetY = (miniUserY ?: maxY).coerceIn(minY, maxY)
+
+    // Drag deltas from the mini card (see PlayerScreen's mini branch). Clamped on every
+    // step, so a fast drag toward an edge stops AT the edge instead of carrying the card
+    // partly off-screen. Reads the backing state rather than the captured `miniOffsetX`
+    // above so a stale closure can't rewind the position mid-gesture.
+    fun onMiniDrag(dxPx: Float, dyPx: Float) {
+        with(density) {
+            miniUserX = ((miniUserX ?: maxX) + dxPx.toDp()).coerceIn(minX, maxX)
+            miniUserY = ((miniUserY ?: maxY) + dyPx.toDp()).coerceIn(minY, maxY)
+        }
+    }
+
+    // The REAL Compose-measured size/position is a hard, DISCRETE jump between exactly
+    // full-screen and the mini card's dimensions — never a continuous interpolation of it.
+    // This is the actual fix for the mini-player's "video stuck at a stale, corner-pinned
+    // size" bug: continuously animating this Box's real size on every drag frame was resizing
+    // the embedded PlayerView's SurfaceView that many times too, and SurfaceView's video buffer
+    // resizes asynchronously from the View's own layout pass — it fell behind and got stuck. A
+    // single hard jump (exactly like the fullscreen toggle already did safely, long before any
+    // of this) never trips that: the surface only ever actually resizes once per crossing.
+    val realWidth = if (mini) miniWidth else maxWidth
+    val realHeight = if (mini) miniHeight else maxHeight
+    val realOffsetX = if (mini) miniOffsetX else 0.dp
+    val realOffsetY = if (mini) miniOffsetY else 0.dp
+
+    // The SMOOTH, continuous "tracks your finger" appearance is a graphicsLayer transform on
+    // top of that fixed real geometry instead — a draw-time-only property that never touches
+    // layout/measure, so it animates freely without going anywhere near the resize problem
+    // above. scale/translation are computed so the (real, currently fixed-size) box RENDERS as
+    // the exact rect the old continuous lerp described — and because rendered size is always
+    // realSize * (visualSize / realSize) = visualSize regardless of which regime realSize is
+    // currently in, the visual result stays perfectly continuous straight through the instant
+    // `mini` flips and the real jump happens.
+    //
+    // Everything that depends on the live fraction is computed INSIDE the graphicsLayer block
+    // below, which runs at draw time: reading [collapse] there invalidates only this layer.
+
+    // Only round the corners once actually at rest at one of the two ends (not mid-drag or
+    // mid-settle-animation): in between, the render can be LARGER than the real (just-jumped)
+    // box — see the scale comment above — and clipping would cut that overflow off at the
+    // smaller box's edge. Square corners for the sub-second a settle animation is still running
+    // isn't something anyone will actually notice.
+    val settled by remember(collapse) { derivedStateOf { collapse.value <= 0f || collapse.value >= 1f } }
+    Box(
+        modifier = Modifier
+            .offset(x = realOffsetX, y = realOffsetY)
+            .size(width = realWidth, height = realHeight)
+            .graphicsLayer {
+                val f = collapse.value
+                val scale = lerp(maxWidth, miniWidth, f) / realWidth
+                scaleX = scale
+                scaleY = scale
+                translationX = (lerp(0.dp, miniOffsetX, f) - realOffsetX).toPx()
+                translationY = (lerp(0.dp, miniOffsetY, f) - realOffsetY).toPx()
+                transformOrigin = TransformOrigin(0f, 0f)
+            }
+            .then(if (settled && mini) Modifier.clip(RoundedCornerShape(8.dp)) else Modifier),
+    ) {
+        PlayerScreen(
+            initialVideos = req.videos,
+            initialIndex = req.index,
+            autoplayRelated = req.autoplayRelated,
+            onBack = onBack,
+            onOpenChannel = onOpenChannel,
+            inPip = inPip,
+            mini = mini,
+            onCollapseDrag = onCollapseDrag,
+            onCollapseDragEnd = onCollapseDragEnd,
+            onMiniDrag = ::onMiniDrag,
+            onExpand = onExpand,
+            onMinimize = onMinimize,
+        )
     }
 }

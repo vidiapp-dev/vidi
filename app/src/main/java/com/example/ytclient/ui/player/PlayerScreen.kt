@@ -196,14 +196,14 @@ fun PlayerScreen(
     onBack: () -> Unit,
     onOpenChannel: (String) -> Unit,
     inPip: Boolean = false,
-    // Progress toward the in-app mini-player, 0f (fully expanded) .. 1f (fully mini-carded over the
-    // tabs — NOT the system PiP window, that's [inPip]). AppRoot owns and animates this single number,
-    // so the container's size/position (in AppRoot) and this composable's own expanded/bare-video
-    // switch below always agree on exactly how collapsed things are, mid-drag or settled.
-    collapseFraction: Float = 0f,
+    // Whether the in-app mini-player is showing (over the tabs — NOT the system PiP window, that's
+    // [inPip]): AppRoot's collapse fraction past its halfway point. Passed as this Boolean, not the
+    // fraction itself, so a drag or settle animation recomposes this screen only when the threshold
+    // is crossed rather than on every frame (see MainActivity's PlayerOverlay).
+    mini: Boolean = false,
     // Live drag delta (px, positive = finger moved down), reported while dragging the expanded video
     // down (to start collapsing) or the mini card up (to expand back) — same callback either
-    // direction; AppRoot turns it into [collapseFraction] via Animatable.snapTo.
+    // direction; AppRoot turns it into its collapse fraction via Animatable.snapTo.
     onCollapseDrag: (Float) -> Unit = {},
     // Drag released, with the final vertical fling velocity (px/s, positive = downward). AppRoot uses
     // this plus the current fraction to decide whether to settle at 0 (expanded) or 1 (mini).
@@ -312,12 +312,10 @@ fun PlayerScreen(
     val manualOrientation = remember { mutableStateOf<Boolean?>(null) }
     val fullscreen = manualOrientation.value ?: isLandscape
 
-    // THRESHOLD on the continuous collapseFraction: past the halfway point of the drag, this
-    // composable swaps from the full expanded page to the bare mini layout — by then AppRoot's
-    // container (see its BoxWithConstraints) is already most of the way to the small corner card, so
-    // the swap reads as part of the same motion rather than a separate jump. Computed early (not just
-    // where it's first used below) because BackHandler, right below, needs it too.
-    val mini = collapseFraction >= 0.5f
+    // [mini] is the threshold on AppRoot's continuous collapse fraction: past the halfway point of the
+    // drag, this composable swaps from the full expanded page to the bare mini layout — by then the
+    // container (MainActivity's PlayerOverlay) is already most of the way to the small corner card, so
+    // the swap reads as part of the same motion rather than a separate jump.
 
     // While the player is open, allow the sensor; restore portrait on exit.
     DisposableEffect(Unit) {
@@ -484,6 +482,12 @@ fun PlayerScreen(
         )
     }
 
+    // Declared ABOVE the fullscreen/PiP and mini-player early returns below: state remembered after a
+    // `return` is discarded whenever that branch is taken, so every fullscreen or minimise round-trip
+    // used to lose the related list's scroll position and bring a dismissed "Up next" bar back.
+    var upNextDismissed by remember(videoId) { mutableStateOf(false) }
+    val contentListState = rememberLazyListState()
+
     // Fullscreen OR Picture-in-Picture → show only the video surface.
     if (fullscreen || inPip) {
         Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -566,8 +570,6 @@ fun PlayerScreen(
         return
     }
 
-    var upNextDismissed by remember(videoId) { mutableStateOf(false) }
-
     // When playing a playlist, the "Up next" section shows the numbered playlist (current highlighted,
     // already-watched entries dropped), instead of related videos.
     val isPlaylist = queue.videos.size > 1 && !queue.autoplayRelated
@@ -579,7 +581,6 @@ fun PlayerScreen(
     } else {
         emptyList()
     }
-    val contentListState = rememberLazyListState()
     // Best-effort: scroll the list to the currently-playing playlist item.
     LaunchedEffect(queue.index, isPlaylist, playlistDisplay.size) {
         if (isPlaylist) {

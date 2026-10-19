@@ -162,6 +162,28 @@ fun HomeScreen(
         // isn't actively typing a new query.
         val showSuggestions = query.isNotBlank() && (suggestions.isNotEmpty() || suggestionsLoading)
 
+        // Declared ABOVE the suggestions early return below: state remembered after a `return@Column`
+        // is discarded whenever that branch is taken, so typing one character into search and clearing
+        // it used to reset the feed's scroll position to the top.
+        //
+        // Pull-to-refresh wraps the feed content (below the search field). Enabled only on the feed,
+        // not on search results.
+        val pullState = rememberPullRefreshState(
+            refreshing = refreshing,
+            onRefresh = { viewModel.refresh() },
+        )
+        // The pull gesture itself nudges the list down while dragging; once the refresh finishes and
+        // the (possibly reordered) feed lands, snap back to the top instead of leaving the list
+        // wherever the drag + new content happened to settle.
+        val feedListState = rememberLazyListState()
+        var wasRefreshing by remember { mutableStateOf(false) }
+        LaunchedEffect(refreshing) {
+            if (wasRefreshing && !refreshing) {
+                feedListState.scrollToItem(0)
+            }
+            wasRefreshing = refreshing
+        }
+
         if (showSuggestions) {
             SearchSuggestionsList(
                 suggestions = suggestions,
@@ -192,23 +214,6 @@ fun HomeScreen(
             Spacer(Modifier.height(8.dp))
         }
 
-        // Pull-to-refresh wraps the feed content (below the search field). Enabled only on the feed,
-        // not on search results.
-        val pullState = rememberPullRefreshState(
-            refreshing = refreshing,
-            onRefresh = { viewModel.refresh() },
-        )
-        // The pull gesture itself nudges the list down while dragging; once the refresh finishes and
-        // the (possibly reordered) feed lands, snap back to the top instead of leaving the list
-        // wherever the drag + new content happened to settle.
-        val feedListState = rememberLazyListState()
-        var wasRefreshing by remember { mutableStateOf(false) }
-        LaunchedEffect(refreshing) {
-            if (wasRefreshing && !refreshing) {
-                feedListState.scrollToItem(0)
-            }
-            wasRefreshing = refreshing
-        }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
