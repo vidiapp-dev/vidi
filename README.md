@@ -11,6 +11,16 @@ Signed APKs are attached to each [GitHub Release](https://github.com/vidiapp-dev
 your browser or file manager). Each APK has a `.sha256` checksum next to it. Updates install over the
 previous version and keep your data. Vidi needs Android 8.0 or newer.
 
+Every release is signed with the same key. Its SHA-256 certificate fingerprint is:
+
+```
+D8:5D:00:65:08:23:99:DA:4A:1B:17:17:74:EC:1E:C4:42:78:39:3E:98:5B:D5:09:72:41:9A:EB:FB:F5:27:D4
+```
+
+To check that an APK really comes from this project, compare that fingerprint with the one shown by
+[AppVerifier](https://github.com/soupslurpr/AppVerifier) on your phone, or by
+`apksigner verify --print-certs Vidi-<version>.apk` on a computer.
+
 Maintainers: see [`RELEASING.md`](RELEASING.md) for how releases are built and signed.
 
 ## Status
