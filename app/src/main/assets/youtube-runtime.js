@@ -42061,7 +42061,7 @@ ${getNsigProcessorFn(eval_args.n, eval_args.sp, eval_args.sig)}`;
       //      sized or tested for it.
       //
       // And it did not even fix the target problem: the improved identity diagnostic showed
-      // `session=Cgs5OXEz… page=CgtwbkNkNTAx… MATCH=false` — still mismatched, because the WebView
+      // `session=visitorData-H… page=visitorData-I… MATCH=false` — still mismatched, because the WebView
       // holds its OWN session, independent of whatever /sw.js_data hands the QuickJS runtime.
       //
       // That is the actual lesson: the identity has to come FROM THE WEBVIEW, since that is where the
