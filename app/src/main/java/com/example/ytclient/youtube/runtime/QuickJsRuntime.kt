@@ -68,12 +68,19 @@ class QuickJsRuntime(
     private val tag = "QuickJsRuntime[$name]"
 
     // Single-thread executor: QuickJS contexts can only be touched from one thread.
-    private val jsDispatcher: CoroutineDispatcher =
-        Executors.newSingleThreadExecutor { r ->
-            Thread(r, name).apply { isDaemon = true }
-        }.asCoroutineDispatcher()
+    private val jsExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, name).apply { isDaemon = true }
+    }
+    private val jsDispatcher: CoroutineDispatcher = jsExecutor.asCoroutineDispatcher()
 
     private val callLock = Mutex()
+
+    // Serialises initialize(). The single-thread dispatcher alone does not: it serialises THREADS,
+    // not coroutines, and initialize() suspends inside qjs.evaluate — so a second caller (App's
+    // startup initialize racing a ViewModel's first call) could run while the first was suspended,
+    // still see initialized == false, create a second engine and overwrite the first, leaking its
+    // native context.
+    private val initLock = Mutex()
 
     private val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -83,9 +90,15 @@ class QuickJsRuntime(
     @Volatile private var quickJs: QuickJs? = null
     @Volatile private var initialized = false
 
-    /** Load and evaluate the bundled runtime. Idempotent. */
-    suspend fun initialize() = withContext(jsDispatcher) {
-        if (initialized) return@withContext
+    /** Load and evaluate the bundled runtime. Idempotent, and safe to call concurrently. */
+    suspend fun initialize() = initLock.withLock {
+        withContext(jsDispatcher) {
+            if (initialized) return@withContext
+            initializeOnJsThread()
+        }
+    }
+
+    private suspend fun initializeOnJsThread() {
         Log.i(tag, "Initialising QuickJS runtime…")
 
         val script = context.assets.open(BUNDLE_ASSET).use { it.readBytes().decodeToString() }
@@ -95,7 +108,19 @@ class QuickJsRuntime(
         // stay on the same thread the engine was created on.
         val qjs = QuickJs.create(jsDispatcher)
         quickJs = qjs
+        try {
+            setUpEngine(qjs, script)
+        } catch (t: Throwable) {
+            // Don't leave a half-built engine behind: the next initialize() would create another
+            // one and this one would never be closed.
+            try { qjs.close() } catch (_: Throwable) {}
+            quickJs = null
+            throw t
+        }
+        initialized = true
+    }
 
+    private suspend fun setUpEngine(qjs: QuickJs, script: String) {
         // Native fetch: returns a JS Promise. Runs the actual HTTP call on
         // Dispatchers.IO so the QuickJS thread is free to interleave other
         // JS work while the network call is in flight.
@@ -226,8 +251,6 @@ class QuickJsRuntime(
             qjs.evaluate<Any?>("globalThis.__yt.configureRegion($loc, $lng, $name);")
             Log.i(tag, "Configured region: location=$regionLocation, lang=$regionLang, name=$regionName")
         }
-
-        initialized = true
     }
 
     /**
@@ -265,10 +288,22 @@ class QuickJsRuntime(
         }
     }
 
+    /**
+     * Terminal: closes the engine ON its own thread (the one-thread rule at the top of this file
+     * applies to close too; this used to run on the caller's thread, i.e. main) and then stops that
+     * thread. Calls after this fail.
+     */
     fun close() {
-        try { quickJs?.close() } catch (_: Throwable) {}
-        quickJs = null
-        initialized = false
+        try {
+            jsExecutor.execute {
+                try { quickJs?.close() } catch (_: Throwable) {}
+                quickJs = null
+                initialized = false
+            }
+        } catch (_: java.util.concurrent.RejectedExecutionException) {
+            // Already closed.
+        }
+        jsExecutor.shutdown()
     }
 
     // ─── Native fetch bridge ─────────────────────────────────────────────────

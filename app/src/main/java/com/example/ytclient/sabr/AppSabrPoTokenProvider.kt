@@ -20,8 +20,11 @@ import org.schabi.newpipe.extractor.services.youtube.sabr.YoutubeSabrStreamState
  *    WEB pot bound to the videoId (the GVS/streaming *content* binding — see PR #47) and return its
  *    raw bytes.
  *
- * Called from the SABR session's request loop on a plain worker thread, so the blocking
- * [runBlocking] around the suspend WebView mint is fine here (never the UI/JS thread).
+ * Called from the SABR session's request loop on a plain worker thread — never the UI/JS thread —
+ * so it blocks in [runBlocking] around the suspend WebView mint. That worker is the ONE pump thread
+ * feeding both audio and video, so the buffer drains while it waits; the wait is bounded by
+ * WebPoTokenProvider's own timeouts (init 30 s, mint 30 s, one reset-and-retry). An interrupt
+ * (SabrSessionHolder.release) ends the wait and is passed on — see the catch below.
  */
 class AppSabrPoTokenProvider(
     private val videoId: String,
@@ -122,6 +125,14 @@ class AppSabrPoTokenProvider(
                     )
                 }
         } catch (t: Throwable) {
+            if (t is InterruptedException) {
+                // runBlocking throws this when release() interrupts the pump thread mid-mint. It
+                // clears the thread's interrupt flag on the way out, and swallowing it here left the
+                // pump unaware it had been stopped, so it ran another round. Restore it.
+                Thread.currentThread().interrupt()
+                Log.i(TAG, "mint interrupted (session released)")
+                return null
+            }
             Log.w(TAG, "real PO token mint failed: ${t.message}")
             null
         }

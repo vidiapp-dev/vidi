@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -605,7 +606,9 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
             val res = runCatchingCancellable { bridge.getRelated(videoId) }.getOrNull()
             if (relatedVideoId != videoId) return@launch // a newer video took over
             relatedHasMore = res?.hasMore ?: false
-            _related.value = res?.videos ?: emptyList()
+            // De-duped like the append path below: the player's LazyColumn keys these by id, and a
+            // repeated id throws "Key … was already used" and takes the player screen down.
+            _related.value = res?.videos?.distinctBy { it.id } ?: emptyList()
         }
     }
 
@@ -614,8 +617,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         if (_loadingMoreRelated.value || !relatedHasMore) return
         val vid = relatedVideoId ?: return
         val current = _related.value
+        // Claimed BEFORE launching (as HomeViewModel.loadMore does): launch() returns before its body
+        // runs, so two triggers in one frame could both pass the guard above and advance the single
+        // watch-next cursor twice, dropping a page.
+        _loadingMoreRelated.value = true
         viewModelScope.launch(Dispatchers.IO) {
-            _loadingMoreRelated.value = true
             try {
                 val res = runCatchingCancellable { bridge.getMoreRelated() }.getOrNull()
                 if (relatedVideoId != vid) return@launch
@@ -1487,10 +1493,14 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
      * PREVIOUS VIDEOS still POSTing every ~2s. Releasing exactly what we displace, at the moment we
      * displace it, makes that unrepresentable regardless of interleaving. (Double release is safe —
      * it's an idempotent pump shutdown.)
+     *
+     * The read and the write must be ONE atomic step ([getAndUpdate]): every caller runs on
+     * Dispatchers.IO, and `onSabrFatal` → `rebuildSabr` arrives from the pump thread. As a separate
+     * read then write, two concurrent publishes could both read A, both release A, and the second
+     * would overwrite B without anyone releasing it — the very leak described above.
      */
     private fun publishSabr(next: UiState<SabrSessionHolder>) {
-        val displaced = currentSabrHolder()
-        _sabr.value = next
+        val displaced = (_sabr.getAndUpdate { next } as? UiState.Success)?.data
         val incoming = (next as? UiState.Success)?.data
         if (displaced != null && displaced !== incoming) {
             displaced.release()
