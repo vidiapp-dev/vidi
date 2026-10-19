@@ -1353,6 +1353,13 @@ private fun PlayerBox(
     // must NOT trigger recomposition.
     val releasing = remember(mediaKey) { booleanArrayOf(false) }
 
+    // The listener THIS composition attached, so its onDispose can detach exactly that one. Needed on
+    // the hand-off path in particular: there the player outlives this composition (the successor
+    // adopts it), so release() never clears listeners, and each locked-screen autoplay used to leave
+    // one more stale listener on the shared player, still writing into a disposed composition's state.
+    // A single-element array like `releasing`: set once inside the remember below, never observed.
+    val attachedListener = remember(mediaKey) { arrayOfNulls<androidx.media3.common.Player.Listener>(1) }
+
     val player = remember(mediaKey) {
         // Adopt an already-live player representing this EXACT mediaKey instead of building a
         // duplicate: this happens when PlaybackController.playDirectly hijacked a still-playing
@@ -1409,7 +1416,7 @@ private fun PlayerBox(
         val bandwidthRebuffers = ArrayDeque<Long>()
         var bandwidthFirstReadyAtMs = 0L
         var bandwidthPrevState = -1
-        exo.addListener(object : androidx.media3.common.Player.Listener {
+        val listener = object : androidx.media3.common.Player.Listener {
             override fun onPlaybackStateChanged(state: Int) {
                 buffering = state == androidx.media3.common.Player.STATE_BUFFERING
                 if (warmSeek && !isHijackedElsewhere()) {
@@ -1522,7 +1529,9 @@ private fun PlayerBox(
                     playerError = "${error.errorCodeName}: ${cause?.message ?: error.message}"
                 }
             }
-        })
+        }
+        exo.addListener(listener)
+        attachedListener[0] = listener
         if (adopted == null) {
             exo.setMediaSource(buildSource())
             exo.prepare()
@@ -1567,6 +1576,9 @@ private fun PlayerBox(
         DisposableEffect(player) {
             PlaybackController.attach(context, player, mediaKey, onNext, hasNext)
             onDispose {
+                // Ours to remove on every path, the hand-off below included.
+                attachedListener[0]?.let(player::removeListener)
+                attachedListener[0] = null
                 if (hijackedElsewhere()) {
                     // Handed off to a later video via PlaybackController.playDirectly (autoplay-next,
                     // or a locked-screen-safe error retry — see the SponsorBlock poll / onPlayerError
@@ -1586,7 +1598,11 @@ private fun PlayerBox(
         }
     } else {
         DisposableEffect(player) {
-            onDispose { player.release() }
+            onDispose {
+                attachedListener[0]?.let(player::removeListener)
+                attachedListener[0] = null
+                player.release()
+            }
         }
     }
 
