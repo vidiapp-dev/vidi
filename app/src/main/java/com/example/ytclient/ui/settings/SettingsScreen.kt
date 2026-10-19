@@ -1,5 +1,8 @@
 package com.example.ytclient.ui.settings
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,8 +19,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -37,7 +43,12 @@ import com.example.ytclient.core.settings.PlaybackMode
 fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
     val mode by viewModel.playbackMode.collectAsState()
 
-    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 12.dp),
+    ) {
         Text(
             "Settings",
             style = MaterialTheme.typography.headlineSmall,
@@ -77,8 +88,65 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        AboutSection()
     }
 }
+
+/**
+ * Version, where the code and releases live, and the donation link. The links open in the browser
+ * ([LocalUriHandler]); nothing is fetched in-app. Donations are gifts that unlock nothing — keep it
+ * that way (see README, Support).
+ */
+@Composable
+private fun AboutSection() {
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    val version = remember {
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
+            .getOrNull() ?: "?"
+    }
+
+    Text(
+        "About",
+        style = MaterialTheme.typography.titleMedium,
+        modifier = Modifier.padding(top = 24.dp, bottom = 4.dp),
+    )
+    Text(
+        "Vidi $version · free software (GPL-3.0)",
+        style = MaterialTheme.typography.bodyMedium,
+    )
+    AboutLink(
+        title = "Source code and releases",
+        description = "github.com/vidiapp-dev/vidi",
+        onClick = { uriHandler.openUri(REPO_URL) },
+    )
+    AboutLink(
+        title = "Support Vidi",
+        description = "Tip on Ko-fi. Donations are optional and unlock nothing — Vidi stays free.",
+        onClick = { uriHandler.openUri(KOFI_URL) },
+    )
+}
+
+@Composable
+private fun AboutLink(title: String, description: String, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(role = Role.Button, onClick = onClick)
+            .padding(vertical = 10.dp),
+    ) {
+        Text(title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.primary)
+        Text(
+            description,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+private const val REPO_URL = "https://github.com/vidiapp-dev/vidi"
+private const val KOFI_URL = "https://ko-fi.com/B4H52941LA"
 
 /**
  * One row of the transport radio group. The whole row is the touch target (not just the button) —

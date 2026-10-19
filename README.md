@@ -297,6 +297,16 @@ where independent researchers reached the same conclusion in mid-2026:
 > that's what BotGuard checks for. SmartTube's WebView approach is good
 > enough imo." — InfinityLoop1308
 
+## Support
+
+Vidi is free and always will be. If it's useful to you and you'd like to say thanks, you can leave
+a tip on Ko-fi:
+
+[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/B4H52941LA)
+
+Tips are voluntary gifts: they don't buy features, support or priority, and Vidi works exactly the
+same either way. Bug reports and pull requests are just as welcome.
+
 ## License
 
 Vidi is free software: you can redistribute it and/or modify it under the terms of the
