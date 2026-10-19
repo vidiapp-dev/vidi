@@ -89,10 +89,14 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     private val _loadingMore = MutableStateFlow(false)
     val loadingMore: StateFlow<Boolean> = _loadingMore
 
-    // Whether more pages are available. Separate guards for the feed list (For you / category) and the
-    // search-bar results, since both can have independent continuations.
-    private var feedHasMore = false
-    private var searchHasMore = false
+    // Whether more pages are available, one flag per list with its own continuation: the "For you"
+    // feed, the selected category, and the search-bar results. "For you" and the category used to
+    // share one flag, so scrolling a category to its end and switching back left "For you" (which
+    // [selectCategory] restores without refetching) unable to page until a pull-to-refresh.
+    // @Volatile: written from IO coroutines, read on the main thread by the paging triggers.
+    @Volatile private var forYouHasMore = false
+    @Volatile private var categoryHasMore = false
+    @Volatile private var searchHasMore = false
 
     // In-flight guard for loadFeed — replaces the old `_feed.value is UiState.Loading` check,
     // which stopped working as a dedup once D3's stale-while-revalidate path started showing
@@ -158,9 +162,11 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
 
     /**
      * The enabled-topic set the currently-shown "For you" feed was actually fetched with. Recorded
-     * at each real page-1 fetch ([loadFeed]/[refresh]) and compared in [refreshTopics].
+     * when a page-1 fetch ([loadFeed]/[refresh]) succeeds and is shown — not before it runs: a failed
+     * fetch keeps the old content on screen, and stamping early made [refreshTopics] treat the
+     * toggle as already applied, so it looked inert until an unrelated refresh.
      */
-    private var topicsAtLastFetch: Set<String> = emptySet()
+    @Volatile private var topicsAtLastFetch: Set<String> = emptySet()
 
     /**
      * Called when the topic-settings dialog closes. Re-fetches page 1 ONLY if the enabled-topic set
@@ -571,6 +577,10 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
      * show" empty state (see its `UiState.Success` branch), not an error to retry.
      */
     private fun publishRanked() {
+        // Enforced here rather than left to callers: rankAndReplace/rankAndAppendBatch publish
+        // unconditionally, so a "For you" page landing after the user switched to a category used to
+        // put "For you" videos under that category's chip. [selectCategory] republishes on return.
+        if (_category.value != "For you") return
         val r = _ranked.value
         _feed.value = UiState.Success(r.map { it.video })
         _feedReasons.value = r.associate { it.video.id to reasonInfo(it.reason) }
@@ -606,7 +616,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         _groupingSubscriptions.value = library.subscribedChannelIds.value
         publishRanked()
         // D3: keep the on-disk head in sync with what's shown (deferred write, see LibraryStore).
-        library.saveCachedHomeFeed(_ranked.value.map { it.video })
+        library.saveCachedHomeFeed(_ranked.value.asSequence().map { it.video })
     }
 
     /**
@@ -643,7 +653,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         publishRanked()
         // D3: the cache stores the (capped) head, which appending doesn't change once past the
         // cap — still refreshed here so short first batches grow toward a full cached screen.
-        library.saveCachedHomeFeed(_ranked.value.map { it.video })
+        library.saveCachedHomeFeed(_ranked.value.asSequence().map { it.video })
     }
 
     private fun loadCategory(c: String) {
@@ -652,13 +662,17 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             _feedReasons.value = emptyMap()
             try {
                 val res = bridge.search(c)
-                feedHasMore = res.hasMore
+                // The user may have switched away while this was in flight; publishing it now would
+                // put this category's videos under another chip.
+                if (_category.value != c) return@launch
+                categoryHasMore = res.hasMore
                 categoryVideos = res.videos
                 _feed.value = UiState.Success(res.videos)
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
-                feedHasMore = false
+                if (_category.value != c) return@launch
+                categoryHasMore = false
                 _feed.value = UiState.Error(t.message ?: "Failed to load $c")
             }
         }
@@ -686,7 +700,6 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                 // Capture the exact set being sent (not a second enabledTopics() call) so
                 // [refreshTopics] compares against what this page was really fetched with.
                 val topics = enabledTopics()
-                topicsAtLastFetch = topics.toSet()
                 val res = bridge.getHomeFeed(
                     historySeedIds(),
                     channelSeedIds(),
@@ -695,7 +708,7 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     topics,
                     topicWeights(),
                 )
-                feedHasMore = res.hasMore
+                forYouHasMore = res.hasMore
                 if (res.videos.isEmpty()) {
                     // Only surface the error state when there's nothing better on screen — with
                     // stale content showing, a transiently empty page 1 shouldn't wipe the screen
@@ -705,12 +718,13 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 } else {
                     rankAndReplace(res.videos)
+                    topicsAtLastFetch = topics.toSet()
                     Startup.mark("home feed page 1 shown (${res.videos.size} videos)")
                 }
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
-                feedHasMore = false
+                forYouHasMore = false
                 // Same reasoning as the empty case above: never replace visible (stale) content
                 // with an error screen for a fetch the user never explicitly asked for.
                 if (_ranked.value.isEmpty()) {
@@ -732,10 +746,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             _refreshing.value = true
             try {
                 val cat = _category.value
+                val topics = enabledTopics()
                 val res = runCatchingCancellable {
                     if (cat == "For you") {
-                        val topics = enabledTopics()
-                        topicsAtLastFetch = topics.toSet()
                         bridge.getHomeFeed(
                             historySeedIds(),
                             channelSeedIds(),
@@ -749,10 +762,12 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }.getOrNull()
                 if (res != null) {
-                    feedHasMore = res.hasMore
                     if (cat == "For you") {
+                        forYouHasMore = res.hasMore
                         rankAndReplace(res.videos)
-                    } else {
+                        topicsAtLastFetch = topics.toSet()
+                    } else if (_category.value == cat) { // see loadCategory
+                        categoryHasMore = res.hasMore
                         categoryVideos = res.videos
                         _feed.value = UiState.Success(res.videos)
                     }
@@ -766,7 +781,9 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
     /** Infinite scroll for the feed list: For you → round-robin, ranked once and appended (see
      *  [rankAndAppendBatch]); a category → search continuation, plain accumulation. */
     fun loadMore() {
-        if (_loadingMore.value || !feedHasMore) return
+        val cat = _category.value
+        val forYou = cat == "For you"
+        if (_loadingMore.value || !(if (forYou) forYouHasMore else categoryHasMore)) return
         if (_feed.value !is UiState.Success) return
         // Claim the guard BEFORE launching, not inside the coroutine. launch() returns before its
         // body runs, so two calls landing in the same frame — which the grouped layout produces
@@ -776,13 +793,14 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
         _loadingMore.value = true
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val forYou = _category.value == "For you"
                 val res = if (forYou) bridge.getMoreHomeFeed() else bridge.getMoreSearch()
-                feedHasMore = res.hasMore
-                if (res.videos.isNotEmpty()) {
-                    if (forYou) {
-                        rankAndAppendBatch(res.videos)
-                    } else {
+                if (forYou) {
+                    forYouHasMore = res.hasMore
+                    if (res.videos.isNotEmpty()) rankAndAppendBatch(res.videos)
+                } else if (_category.value == cat) {
+                    // Only while still on the category this page belongs to — see loadCategory.
+                    categoryHasMore = res.hasMore
+                    if (res.videos.isNotEmpty()) {
                         val existingIds = categoryVideos.mapTo(HashSet()) { it.id }
                         val fresh = res.videos.filterNot { it.id in existingIds }
                         if (fresh.isNotEmpty()) {
@@ -794,7 +812,8 @@ class HomeViewModel(application: Application) : AndroidViewModel(application) {
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
-                feedHasMore = false
+                if (forYou) forYouHasMore = false
+                else if (_category.value == cat) categoryHasMore = false
             } finally {
                 _loadingMore.value = false
             }

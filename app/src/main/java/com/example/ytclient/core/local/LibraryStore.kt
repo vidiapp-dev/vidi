@@ -779,9 +779,10 @@ class LibraryStore(context: Context) {
         }.getOrNull() ?: emptyList()
 
     /** Persist the currently shown feed head (capped to [FEED_CACHE_MAX]); write is deferred to
-     *  [writeScope] like every other persist here, so ranking paths can call it freely. */
-    fun saveCachedHomeFeed(videos: List<com.example.ytclient.youtube.models.SearchVideo>) {
-        val capped = videos.take(FEED_CACHE_MAX)
+     *  [writeScope] like every other persist here, so ranking paths can call it freely. A Sequence so
+     *  callers holding a long accumulated feed don't copy all of it just for this to keep the head. */
+    fun saveCachedHomeFeed(videos: Sequence<com.example.ytclient.youtube.models.SearchVideo>) {
+        val capped = videos.take(FEED_CACHE_MAX).toList()
         writeScope.launch {
             runCatching {
                 prefs.edit().putString(KEY_FEED_CACHE, json.encodeToString(feedCacheSerializer, capped)).apply()
